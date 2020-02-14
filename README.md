@@ -8,9 +8,9 @@ Fityk homepage: [https://fityk.nieto.pl/](https://fityk.nieto.pl/)
 If you want to read the code, I advise to read Fityk's [manual](https://fityk.nieto.pl/fityk-manual.html).
 
 There are 2 scripts.
+
 1. "analyze.lua" is foolproof and should work with cfityk.
-2. "analyze_and_plot.lua" is meant to be used with the GUI version. 
-I can't guarantee that the script will work for all different computers because I'm using GUI through script, athough plotting with scripts isn't fully supported.
+2. "analyze_and_plot.lua" is meant to be used with the GUI version. I can't guarantee that the script will work for all different computers because I'm using GUI through script, athough plotting with scripts isn't fully supported.
 
 The script is written for spectra files gained from SOLIS software using Andor iStar340T ICCD camera. The files are generic columnar files where 1st column is pixel value and all other columns are different experiments.
 
