@@ -1,4 +1,5 @@
 # Spectra analyzer script for Fityk
+
 Author: Jasper Ristkok
 
 
@@ -13,11 +14,14 @@ I can't guarantee that the script will work for all different computers because 
 
 The script is written for spectra files gained from SOLIS software using Andor iStar340T ICCD camera. The files are generic columnar files where 1st column is pixel value and all other columns are different experiments.
 
-Also the GUI is unresponsive while Fityk is calculating stuff. That's why you won't see progress in the command line output. Although you can see how far the process is by checking output file or drawn images. Depending on your computer and how many datapoints and functions you have, the process might take a long time. For me (Macbook pro 3,1 GHz Intel Core i5) it took 16 seconds to analyze and draw 16 spectra in the example folder.
+Also the GUI is unresponsive while Fityk is calculating stuff. That's why you won't see progress in the command line output. Although you can see how far the process is by checking the output file or drawn images. Depending on your computer and how many datapoints and functions you have, the process might take a long time. For me (Macbook pro 3,1 GHz Intel Core i5) it took 16 seconds to analyze and draw 16 spectra in the example folder.
+
 ---
 
 ## Example folder
+
 I added an example folder in which there are 2 spectra series and an example info file. In the folder there is another output folder in which you can see the results for those 2 files.
+
 ---
 
 ## Using the script
