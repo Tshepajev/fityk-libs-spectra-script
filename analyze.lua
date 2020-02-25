@@ -1,5 +1,5 @@
 -- Lua script for Fityk.
--- Script version: 1.0
+-- Script version: 1.1
 -- Author: Jasper Ristkok
 
 -- Written for use with LIBS (atomic) spectra gained from SOLIS software
@@ -15,20 +15,23 @@
 ----------------------------------------------------------------------
 -- Constants, change them
 -- How many spectra lines are there?
-nr_of_lines=3
+nr_of_lines=20
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
 -- By convention in lua, thhe first index is 1 instead of 0
-line_positions={1013,1359,1546,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+line_positions={973,1314,1504,483,510,553,639,651,714,866,913,1046,1105,1156,1253,1267,1355,1451,1553,1595,1634}
 -- How far can the peak shift? If array element is non-0, 
 -- then bigger shifts are considered lack of peak
--- Writing the value of the corresponding peak as 0 uses the default 30% domain.
-line_center_domains={500,15,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0} 
+-- Writing the value of the corresponding peak as -1 uses the default 30% domain.
+-- 0 locks the line in place
+line_center_domains={40,3,3,3,6,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,30,3,3} 
+-- How can the FWHM be? Larger lines are deleted. -1 skips FWHM check.
+max_line_widths={-1,15,15,15,40,15,15,15,15,15,15,15,15,15,15,15,15,15,40,15,15}
 -- Where does the spectra actually start and end? (cutting away the edges) 
 start=445
-endpoint=1666
+endpoint=1662
 -- What are system paths for input folder and output folder
-input_path="/Users/jasper/repos/spectra-analyzer/Example/"
-output_path="/Users/jasper/repos/spectra-analyzer/Example/Output/"
+input_path="/Users/jasper/Documents/Magistritöö/Koos/"
+output_path="/Users/jasper/Documents/Magistritöö/Output/"
 -- What type of files do you use?
 file_end=".asc"
 -- When importing text into spreadsheet filename (e.g. 13.5) may be 
@@ -37,6 +40,11 @@ file_end=".asc"
 separator=","
 ----------------------------------------------------------------------
 -- Change constants above
+
+
+--Global variable initializations
+center_error="-"
+center_errors={}
 
 
 -- Deletes all datasets and functions
@@ -121,7 +129,7 @@ for n=first_filenr,last_filenr,1 do
   -- Iterates over all series in file
   for m=4,series_length-1,1 do
     -- Divides datasets with experiment parameters
-    F:execute("use@"..m)
+    F:execute("use @"..m)
     F:execute("Y=y/"..division)
     
     -- Cuts out the edges of the spectra
@@ -129,32 +137,83 @@ for n=first_filenr,last_filenr,1 do
     F:execute("@"..m..": A = a and not ("..endpoint.." < x and x < 2050)")
     
     -- Line fitting for 1 constant and nr_of_lines Voigt profiles
+    -- Checks whether domain is negative, 0 or a positive value.
+    -- In the latter case, highest peak is found in range and then center
+    -- gets locked in place.
     F:execute("guess Constant")
     for linenr=1,nr_of_lines,1 do
-      F:execute("guess Voigt (center=~"..line_positions[linenr]..")")
-      F:execute("@"..m..": fit")
+      if line_center_domains[linenr]==0 then
+        -- Center is locked variable
+        F:execute("guess Voigt (center="..line_positions[linenr]..")")
+      elseif line_center_domains[linenr]<0 then
+        -- Center is simple variable
+        F:execute("guess Voigt (center=~"..line_positions[linenr]..")")
+      else
+        -- Possible error catching (if peak outside of the range)
+        -- Center is inside given domain
+        status, err = pcall(function() F:execute("guess Voigt ["..
+        (line_positions[linenr]-line_center_domains[linenr])..":"..
+        (line_positions[linenr]+line_center_domains[linenr]).."]") end)
+        -- Catch error or lock center
+        if status == false then
+            -- Make dummy function for indexing
+            F:execute("guess Voigt (center="..line_positions[linenr]..",height=0)")
+            print("Error: " .. err)
+        else 
+          -- Saving guessed center errors
+          if line_center_domains[linenr]>0 then
+            F:execute("$center_cov=F["..linenr.."].center.error")
+            center_errors[linenr]=F:get_variable("center_cov"):value()
+          end
+          -- Locking center
+          center_name=F:get_components(m)[linenr]:var_name("center")
+          F:execute("$"..center_name.."={$"..center_name.."}")
+        end
+      end
     end
+    F:execute("@"..m..": fit")
+    print("Experiment: "..n..separator..(m-3))
  
  
     -- Block: gives functions 0-height if they are negative or 
     -- center is shifted further than defined in center domains array
-    -- Finds dataset functions
-    functions=F:get_components(m)
-    -- Iterates over functions
-    for i=1,nr_of_lines,1 do
-      -- If there's no peak (peak<0) or if the line has domains defined 
-      -- and the center is not in range then peak is considered absent
-      if ((functions[i]:get_param_value("height")<0) or 
-      (not(line_center_domains[i]==0) and 
-      math.abs(functions[i]:get_param_value("center")-line_positions[i])>line_center_domains[i])) then
-        -- Finds height variable for given function
-        height_variable=functions[i]:var_name("height")
-        F:execute("$"..height_variable.."=0")
-        -- Refits the functions
-        F:execute("@"..m..": fit")
+    -- Loops 2 times
+    for i=1,2,1 do 
+      -- Finds dataset functions
+      functions=F:get_components(m)
+      -- Writes constant 0 if it's negative
+      if (functions[0]:get_param_value("a")<0) then
+        constant_variable=functions[0]:var_name("a")
+        F:execute("$"..constant_variable.."=0")
       end
+      -- Iterates over functions
+      for i=1,nr_of_lines,1 do
+        -- Checks if line is too wide
+        if max_line_widths[i]<0 then
+          too_wide=false
+        else
+          gaussian_width=(functions[i]:get_param_value("GaussianFWHM"))
+          lorentzian_width=(functions[i]:get_param_value("LorentzianFWHM"))
+          too_wide=(math.abs(gaussian_width)>max_line_widths[i] or 
+          math.abs(lorentzian_width)>max_line_widths[i])
+        end
+        -- Checks if line has negative height
+        negative_height=(functions[i]:get_param_value("height")<0)
+        -- Checks line center position
+        too_far=(math.abs(functions[i]:get_param_value("center")-line_positions[i])>line_center_domains[i])
+        -- If there's no peak (peak<0) or if the line has domains defined 
+        -- and the center is not in range 
+        -- or line is too wide then peak is considered absent
+        if (negative_height or too_wide or too_far) then
+          -- Finds height variable for given function
+          height_variable=functions[i]:var_name("height")
+          F:execute("$"..height_variable.."=0")
+        end
+      end
+      -- Refits the functions
+      F:execute("@"..m..": fit")
+      print("Experiment: "..n..separator..(m-3))
     end
-    
 
     -- Block: writes parameters of the functions into output file
     file=io.open(output_path.."output.txt","a")
@@ -164,8 +223,12 @@ for n=first_filenr,last_filenr,1 do
     -- Degrees of freedom
     dof=F:get_dof(m)
     -- dirty workaround to get constant error covariance
-    F:execute("$a_cov=F[0].a.error")
-    constant_error=math.sqrt(F:get_variable("a_cov"):value()*chi2/dof)
+    if functions[0]:get_param_value("a")==0 then
+      constant_error="-"
+    else
+      F:execute("$a_cov=F[0].a.error")
+      constant_error=math.sqrt(F:get_variable("a_cov"):value()*chi2/dof)
+    end    
     -- Writes dataset info
     io.write(n..separator..(m-3))
     io.write("\t"..chi2)
@@ -181,12 +244,20 @@ for n=first_filenr,last_filenr,1 do
       else
         -- Dirty workaroud for getting errors covariances
         F:execute("$height_cov=F["..i.."].height.error")
-        F:execute("$center_cov=F["..i.."].center.error")
         F:execute("$gwidth_cov=F["..i.."].gwidth.error") 
-        F:execute("$shape_cov=F["..i.."].shape.error") 
+        F:execute("$shape_cov=F["..i.."].shape.error")
+        -- Checks whether there is a center error from calculations
+        -- If domains are specified then center_errors array comes when making functions
+        if line_center_domains[i]<0 then
+          F:execute("$center_cov=F["..i.."].center.error")
+          center_error=math.sqrt(F:get_variable("center_cov"):value()*chi2/dof)
+        elseif line_center_domains[i]==0 then
+          center_error="locked"
+        else
+          center_error=math.sqrt(center_errors[i]*chi2/dof)
+        end
         -- Calculates standard errors (form "Curve Fitting" in Fityk manual)
         height_error=math.sqrt(F:get_variable("height_cov"):value()*chi2/dof)
-        center_error=math.sqrt(F:get_variable("center_cov"):value()*chi2/dof)
         gwidth_error=math.sqrt(F:get_variable("gwidth_cov"):value()*chi2/dof)
         shape_error=math.sqrt(F:get_variable("shape_cov"):value()*chi2/dof)
         -- Writes data into file
@@ -210,29 +281,23 @@ for n=first_filenr,last_filenr,1 do
     print("Series nr "..(m-3).." done.")
   end
 
---[[
+
   -- Stop at current file for debugging
   answer=F:input("Stop at file"..n.."? [y/n]")
   if answer=='y' then 
     break
   end
-]]
+
   
   -- Block: deletes all except the info file
   series_length=F:get_dataset_count()
   -- Iterates over datasets except for info file ones (first 4)
   for k=series_length-1,4,-1 do
     F:execute("use @"..k)
-    --print("k:"..k)
     -- Gets functions for given dataset
     functions=F:get_components(k)
-    --print("functions:",functions)
-    --print("nr of functions:"..#functions)
     -- Iterates over functions
     for l=#functions-1,0,-1 do
-      --print("l:"..l)
-      --print("funcs:",functions[l])
-      --print("function name:",functions[l].name)
       -- Deletes functions for current dataset
       F:execute("delete %"..functions[l].name)
     end

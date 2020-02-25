@@ -1,0 +1,5 @@
+v1.0
+Wrote script that reads all the files defined in info.txt, fits peaks and outputs peak parameters.
+
+v1.1
+Added features like initial peak center constraints and function width checking. Improved error output when locking function variables.
