@@ -3,3 +3,6 @@ Wrote script that reads all the files defined in info.txt, fits peaks and output
 
 v1.1
 Added features like initial peak center constraints and function width checking. Improved error output when locking function variables.
+
+v1.2
+Hardcoded parameter bound constraints for functions as parameter=constant1+constant2*sin(variable). Fityk had constraints for initial guessing but not for additional fitting. Now preformance is significantly lower but numerical stability is higher.
