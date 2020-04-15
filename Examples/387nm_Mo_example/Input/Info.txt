@@ -1,0 +1,4 @@
+Filename	Exp time,s	Nr acc	gain	width,ns
+3	0.00077	3	800	1000
+4	0.00077	3	800	1000
+5	0.00077	3	800	1000
