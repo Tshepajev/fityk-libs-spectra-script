@@ -296,7 +296,7 @@ function init_data2()
     gain=gains[file_index-first_filenr]
     gate_width=widths[file_index-first_filenr]
     -- Calculates the real gain of the signal
-    actual_gain=3.0955e-11*gain^4-1.45304e-7*gain^3+0.0002454*gain^2-0.129418*gain+13.00316
+    actual_gain=1.120270358187*math.exp(0.0019597049*gain)
     division=exposure_time*nr_of_accumulations*actual_gain*gate_width
 
     -- Divides dataset with experiment parameters
