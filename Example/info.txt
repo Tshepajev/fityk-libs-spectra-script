@@ -1,4 +1,0 @@
-Use the columns as follows:
-File nr	exposure time	nr. of accumulations	gain	gate widh
-37	0.00044	3	2500	1000
-38	0.00044	3	2500	1000
