@@ -17,11 +17,12 @@ The script is written for spectra files gained from SOLIS software using Andor i
 Also the GUI is unresponsive while Fityk is calculating stuff. That's why you won't see progress in the command line output. Although you can see how far the process is by checking the output file or drawn images. Depending on your computer and how many datapoints and functions you have, the process might take a long time. 
 
 For me (Macbook pro 3,1 GHz Intel Core i5, using 1 instance of Fityk (a.k.a 25% of CPU power)) it took 16 seconds to analyze and draw 16 spectra in the example folder. Using analyze_and_plot script v1.3 with 36 Voigt functions and a constant, the script processed 72 experiments in 84 minutes. The processing time probably scales exponentially with the number of functions.
+
 ---
 
 ## Example folder
 
-I added an example folder in which there are 2 spectra series and an example info file. In the folder there is another output folder in which you can see the results for those 2 files.
+I added an example folder in which there are 2 different cases with 3 spectra series and an example info file. For the both cases there is an output folder in which you can see the results for those files.
 
 ---
 
@@ -58,4 +59,6 @@ I added an example folder in which there are 2 spectra series and an example inf
 	11. aqua
 	12. strawberry
 	13. ...
+If some peaks are coloured the same and are situated next to eachother because of peak location ordering, you can colour one of them white (snow).
+
 * Once the script took 5 minutes to process 1 experiment with 37 functions. When I quit Fityk and reopened it everything was about 5 times quicker. So if you think the script works absurdly slow, try to quit Fityk and reopen it (might have been something with RAM usage).
