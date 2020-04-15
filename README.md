@@ -59,6 +59,7 @@ I added an example folder in which there are 2 different cases with 3 spectra se
 	11. aqua
 	12. strawberry
 	13. ...
+
 If some peaks are coloured the same and are situated next to eachother because of peak location ordering, you can colour one of them white (snow).
 
 * Once the script took 5 minutes to process 1 experiment with 37 functions. When I quit Fityk and reopened it everything was about 5 times quicker. So if you think the script works absurdly slow, try to quit Fityk and reopen it (might have been something with RAM usage).
