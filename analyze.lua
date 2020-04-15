@@ -1,5 +1,5 @@
 -- Lua script for Fityk.
--- Script version: 1.2
+-- Script version: 1.2 - might be outdated
 -- Author: Jasper Ristkok
 
 -- Written for use with LIBS (atomic) spectra gained from SOLIS software
