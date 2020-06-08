@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 1.3
+-- Script version: 1.4
 -- Author: Jasper Ristkok
 
 --[[
@@ -31,13 +31,81 @@ way you want it to look, click on the dataset @0 and then run the script.
 -- Constants, change them
 
 -- How many spectra lines are there?
-nr_of_lines=37
+nr_of_lines=60
 
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
 -- By convention in lua, thhe first index is 1 instead of 0
 line_positions=
 {
--- Most intense peaks
+-- Most intense peaks 656nm
+972,    --1
+1314,   --2
+1503.3,   --3 x0.3
+-- Other intense peaks
+511,     --4
+550.5,     --5
+713,     --6
+1143,    --7
+1265.9,    --8x
+1346,    --9
+1559.7,    --10
+-- Smaller intensity or mathematical peaks
+452,	--11
+466.3,  --12 Mo2
+482,	--13
+502.6,  --14 Mo2
+547,    --15
+562,    --16
+584,	--17
+603,	--18
+639,	--19
+648.4,  --20 Mo2
+650,	--21
+669,    --22
+696,    --23
+700,	--24
+760,    --25
+812,    --26
+824,	--27
+855,	--28
+864,	--29
+911,	--30
+916,	--31
+935,	--32
+948,	--33
+1014,	--34
+1023,   --35
+1044,	--36
+1065,   --37
+1087,	--38
+1105,	--39
+1121,   --40
+1140,   --41
+1155,	--42
+1170,	--43
+1255,	--44
+1267.2, --45x0.2
+1288,	--46
+1354.6,	--47 Mo2
+1363,   --48
+1395,   --49
+1404.3, --50
+1423,   --51
+1452,   --52
+1497.1, --53x0.2
+1499.1, --54x0.2
+1527,   --55
+1544,   --56
+1551,	--57
+1569,	--58
+1591,	--59
+1632	--60 Mo2
+
+
+
+
+--[[
+-- Most intense peaks 387nm
 612,    --1
 980,    --2
 1198,   --3
@@ -77,6 +145,7 @@ line_positions=
 1354,   --35
 1479,   --36
 1595    --37
+--]]
 }
 
 -- How far can the peak shift? If array element is non-0, 
@@ -85,7 +154,8 @@ line_positions=
 -- 0 locks the line in place
 line_center_domains=
 {
-3,	--1
+--[[
+3,	--1 387nm
 3,	--2
 3,	--3
 3,	--4
@@ -122,6 +192,90 @@ line_center_domains=
 3,	--35
 3,	--36
 3,	--37
+3,	--38
+3,	--39
+3,	--40
+3,	--41
+3,	--42
+3,	--43
+3,	--44
+3,	--45
+3,	--46
+3,	--47
+3,	--48
+3,	--49
+3,	--50
+3,	--51
+3,	--52
+3,	--53
+3,	--54
+3,	--55
+3,	--56
+3,	--57
+3,	--58
+3,	--59
+3	--60
+]]
+3,	--1 656nm
+3,	--2
+0.3,	--3
+3,	--4
+3,	--5
+3,	--6
+3,	--7
+0.2,	--8
+3,	--9
+3,	--10
+3,	--11
+0.5,	--12
+3,	--13
+0.5,	--14
+3,	--15
+3,	--16
+3,	--17
+3,	--18
+3,	--19
+0.5,	--20
+3,	--21
+3,	--22
+3,	--23
+3,	--24
+3,	--25
+3,	--26
+3,	--27
+3,	--28
+3,	--29
+3,	--30
+3,	--31
+3,	--32
+3,	--33
+3,	--34
+3,	--35
+3,	--36
+3,	--37
+3,	--38
+3,	--39
+3,	--40
+3,	--41
+3,	--42
+3,	--43
+3,	--44
+0.2,	--45
+3,	--46
+0.5,	--47
+3,	--48
+3,	--49
+3,	--50
+3,	--51
+3,	--52
+0.2,	--53
+0.2,	--54
+3,	--55
+3,	--56
+3,	--57
+3,	--58
+3,	--59
+0.5	--60
 }
 
 -- How large can the FWHM be? Larger lines are deleted. -1 skips FWHM check.
@@ -171,6 +325,24 @@ max_line_widths=
 -1,     --40
 -1,     --41
 -1,     --42
+-1,	--43
+-1,	--44
+-1,	--45
+-1,	--46
+-1,	--47
+-1,	--48
+-1,	--49
+-1,	--50
+-1,	--51
+-1,	--52
+-1,	--53
+-1,	--54
+-1,	--55
+-1,	--56
+-1,	--57
+-1,     --58
+-1,     --59
+-1     --60
 -- etc.
 }
 
@@ -178,7 +350,8 @@ max_line_widths=
 -- <=0 then doesn't bind line gwidth
 max_line_gwidths=
 {
-4,	--1
+--[[
+4,	--1 387nm
 4,	--2
 4,	--3
 4,	--4
@@ -215,6 +388,67 @@ max_line_gwidths=
 8,	--35
 4,	--36
 7,	--37
+]]
+50,	--1 656nm
+4,	--2
+4,	--3
+4,	--4
+4,	--5
+4,	--6
+4,	--7
+4,	--8
+4,	--9
+4,	--10
+4,	--11
+4,	--12
+4,	--13
+4,	--14
+4,	--15
+4,	--16
+4,	--17
+4,	--18
+4,	--19
+4,	--20
+4,	--21
+4,	--22
+4,	--23
+4,	--24
+4,	--25
+4,	--26
+4,	--27
+4,	--28
+4,	--29
+4,	--30
+4,	--31
+4,	--32
+4,	--33
+4,	--34
+4,	--35
+4,	--36
+4,	--37
+4,	--38
+4,	--39
+4,	--40
+4,	--41
+4,	--42
+4,	--43
+4,	--44
+4,	--45
+4,	--46
+4,	--47
+4,	--48
+4,	--49
+4,	--50
+4,	--51
+4,	--52
+2,	--53
+2,	--54
+4,	--55
+4,	--56
+4,	--57
+4,	--58
+4,	--59
+4	--60
 }
 
 -- Where does the spectra actually start and end? (cutting away the edges) 
@@ -223,8 +457,8 @@ endpoint=1653
 
 -- What are system paths for input and output folder?
 -- Folders have to exist beforehand.
-input_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/387nm_Mo_example/Input/"
-output_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/387nm_Mo_example/Output/"
+input_path="/Users/jasper/Documents/Magistritöö/Input/"
+output_path="/Users/jasper/Documents/Magistritöö/Output/"
 
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
@@ -261,6 +495,12 @@ minimal_gwidth=0.5
 
 -- Do you want to stop for query for continuing after every file? [true/false]
 stop=false
+
+-- How much do you want to lower constant according to equation
+-- constant_value=minimal_data_value+abs(constant_guess_value-minimal_data_value)*lower_constant
+-- or do you just want Fityk to guess constant height 
+-- (if former then recommended range is [0,1], if latter then write lower_constant=false).
+lower_constant=0.2
 ----------------------------------------------------------------------
 -- Change constants above
 
@@ -444,6 +684,19 @@ end
 -- gets locked in place.
 function fit_functions()
   F:execute("guess Constant")
+  -- if user wants then constant gets an average value of current constant
+  -- height and minimal data value
+  if lower_constant then
+    -- reads defined functions e.g constant
+    functions=F:get_components(0)
+    F:execute("$min_data_value=min(y if (x>"..start.." and x<"..endpoint.."))")
+    constant_guess_value=functions[0]:get_param_value("a")
+    minimal_data_value=F:get_variable("min_data_value"):value()
+    constant_guess_value=minimal_data_value+math.abs(constant_guess_value-minimal_data_value)*lower_constant
+    constant_variable=functions[0]:var_name("a")
+    F:execute("$"..constant_variable.."="..constant_guess_value)
+  end
+  -- Iterates over lines
   for linenr=1,nr_of_lines,1 do
     -- Globalizes linenr from for loop for variable naming
     line_index=linenr
@@ -547,7 +800,7 @@ function write_output()
   -- Degrees of freedom
   dof=F:get_dof(0)
   -- dirty workaround to get constant error covariance
-  if functions[0]:get_param_value("a")==0 then
+  if (functions[0]:get_param_value("a")==0 or lower_constant) then
     constant_error="-"
   else
     F:execute("$a_cov=F[0].a.error")
