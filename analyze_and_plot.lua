@@ -216,7 +216,7 @@ line_center_domains=
 3,	--59
 3	--60
 ]]
-3,	--1 656nm
+30,	--1 656nm
 3,	--2
 0.3,	--3
 3,	--4
@@ -256,7 +256,7 @@ line_center_domains=
 3,	--38
 3,	--39
 3,	--40
-3,	--41
+0.2,	--41
 3,	--42
 3,	--43
 3,	--44
@@ -389,7 +389,7 @@ max_line_gwidths=
 4,	--36
 7,	--37
 ]]
-50,	--1 656nm
+80,	--1 656nm
 4,	--2
 4,	--3
 4,	--4
@@ -756,7 +756,9 @@ function check_functions()
   end
 end
 ------------------------------------------
--- Saves line parameters' errors
+-- Saves line parameters' errors. It gets errors from $_variable.parameter.error.
+-- I've concluded that this value comes from confidence interval of 97%. It
+-- doesn't match with standard deviation directly.
 function get_errors()
   -- y=a+b*sin(angle) => y_error=d_y/d_angle * angle_error
   -- y_error=b*cos(angle)*angle_error
@@ -791,7 +793,9 @@ function get_errors()
   end
 end
 ------------------------------------------
--- Writes parameters of the functions into output file
+-- Writes parameters of the functions into output file.
+-- I've concluded that error values come from confidence interval of 97%. They
+-- don't match with standard deviation directly.
 function write_output()
   file=io.open(output_path..output_data_name,"a")
   io.output(file)
@@ -987,4 +991,5 @@ for n=first_filenr,last_filenr,1 do
   end
   
   print("File nr "..file_index.." done.")
+  collectgarbage("collect")
 end
