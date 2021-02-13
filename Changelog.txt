@@ -12,3 +12,6 @@ Changed guess_parameter_constructor() so that gwidth can't go negative. It impro
 
 v1.4
 Added an additional multiplier column in load_info() - for backup. 
+
+v1.5
+Added pre-amp correction and point-wise multiplication for correction for e.g spectral sensitivity.

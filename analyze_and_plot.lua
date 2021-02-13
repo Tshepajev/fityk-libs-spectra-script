@@ -30,8 +30,63 @@ way you want it to look, click on the dataset @0 and then run the script.
 ----------------------------------------------------------------------
 -- Constants, change them
 
+-- Where does the spectra actually start and end? (cutting away the edges) 
+start=510
+endpoint=1620
+
+-- What are system paths for input and output folder?
+-- Folders have to exist beforehand.
+input_path="/Users/jasper/Documents/Magistritöö/Input/"
+output_path="/Users/jasper/Documents/Magistritöö/Output/"
+
+-- Change this if you want to use multiple instances of Fityk calculating
+-- simultaneously using different inputs / different ranges. 
+-- MAKE SURE THERE AREN'T ERRORS IN THE INPUT DATA
+-- (input columns: file nr;pre-amp;exposure time;nr of accumulations;gain;gate width;additional multiplier)
+input_info_name="Info.csv"
+-- (input columns: file nr;sensitivity;additional multiplier)
+input_sensitivity_name="Sensitivity.csv"
+output_data_name="Output.txt"
+
+-- What type of data files do you want to input?
+file_end=".asc"
+
+-- When importing text into spreadsheet filename (e.g. 13.5) may be 
+-- read as a float. Using different separator (e.g. 13,5) avoids losing
+-- "decimal" zeros from the end of the value
+separator=","
+
+-- To plot or not to plot [true/false]?
+plot=true
+
+-- What are the plotting ranges? Use false to use automatic ranges
+-- e.g. x_min=false x_max=500 y_min=0.5 y_max=false
+x_min=start-(endpoint-start)/10
+x_max=endpoint+(endpoint-start)/10
+y_min=false
+y_max=false
+
+-- If peak is considered wide then how wide is it? -- somewhat rudimentary
+guess_initial_gwidth=25
+
+-- Should the peaks be considered wide? -- somewhat rudimentary
+wide=false
+
+-- What is the minimal line gwidth? Functions with gwidth lower than here
+-- will be considered unphysical and written 0
+minimal_gwidth=0.5
+
+-- Do you want to stop for query for continuing after every file? [true/false]
+stop=false
+
+-- How much do you want to lower constant according to equation
+-- constant_value=minimal_data_value+abs(constant_guess_value-minimal_data_value)*lower_constant
+-- or do you just want Fityk to guess constant height 
+-- (if former then recommended range is [0,1], if latter then write lower_constant=false).
+lower_constant=0.2
+
 -- How many spectra lines are there?
-nr_of_lines=60
+nr_of_lines=56
 
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
 -- By convention in lua, the first index is 1 instead of 0
@@ -50,10 +105,10 @@ line_positions=
 1346,    --9
 1559.7,    --10
 -- Smaller intensity or mathematical peaks
-452,	--11
-466.3,  --12 Mo2
-482,	--13
-502.6,  --14 Mo2
+--452,	--11
+--466.3,  --12 Mo2
+--482,	--13
+--502.6,  --14 Mo2
 547,    --15
 562,    --16
 584,	--17
@@ -226,10 +281,10 @@ line_center_domains=
 0.2,	--8
 3,	--9
 3,	--10
-3,	--11
-0.5,	--12
-3,	--13
-0.5,	--14
+--3,	--11
+--0.5,	--12
+--3,	--13
+--0.5,	--14
 3,	--15
 3,	--16
 3,	--17
@@ -399,10 +454,10 @@ max_line_gwidths=
 4,	--8
 4,	--9
 4,	--10
-4,	--11
-4,	--12
-4,	--13
-4,	--14
+--4,	--11
+--4,	--12
+--4,	--13
+--4,	--14
 4,	--15
 4,	--16
 4,	--17
@@ -450,58 +505,6 @@ max_line_gwidths=
 4,	--59
 4	--60
 }
-
--- Where does the spectra actually start and end? (cutting away the edges) 
-start=445
-endpoint=1653
-
--- What are system paths for input and output folder?
--- Folders have to exist beforehand.
-input_path="/Users/jasper/Documents/Magistritöö/Input/"
-output_path="/Users/jasper/Documents/Magistritöö/Output/"
-
--- Change this if you want to use multiple instances of Fityk calculating
--- simultaneously using different inputs / different ranges. 
-input_info_name="Info.txt"
-input_sensitivity_name="Sensitivity.txt"
-output_data_name="Output.txt"
-
--- What type of files do you use?
-file_end=".asc"
-
--- When importing text into spreadsheet filename (e.g. 13.5) may be 
--- read as a float. Using different separator (e.g. 13,5) avoids losing
--- "decimal" zeros from the end of the value
-separator=","
-
--- To plot or not to plot [true/false]?
-plot=true
-
--- What are the plotting ranges? Use false to use automatic ranges
--- e.g. x_min=false x_max=500 y_min=0.5 y_max=false
-x_min=start-(endpoint-start)/10
-x_max=endpoint+(endpoint-start)/10
-y_min=false
-y_max=false
-
--- If peak is considered wide then how wide is it? -- somewhat rudimentary
-guess_initial_gwidth=25
-
--- Should the peaks be considered wide? -- somewhat rudimentary
-wide=false
-
--- What is the minimal line gwidth? Functions with gwidth lower than here
--- will be considered unphysical and written 0
-minimal_gwidth=0.5
-
--- Do you want to stop for query for continuing after every file? [true/false]
-stop=false
-
--- How much do you want to lower constant according to equation
--- constant_value=minimal_data_value+abs(constant_guess_value-minimal_data_value)*lower_constant
--- or do you just want Fityk to guess constant height 
--- (if former then recommended range is [0,1], if latter then write lower_constant=false).
-lower_constant=0.2
 ----------------------------------------------------------------------
 -- Change constants above
 
@@ -509,10 +512,14 @@ lower_constant=0.2
 --Global variable initializations
 first_filenr=nil
 last_filenr=nil
+pre_amps=nil
 exposures=nil
 acc_nrs=nil
 gains=nil
 widths=nil
+file_multipliers=nil
+spectra_multiplier=nil
+
 center_error="-"
 center_errors={}
 gwidth_errors={}
@@ -538,44 +545,70 @@ function delete_all()
 end
 ------------------------------------------
 -- Saves info file into separate arrays so that @0 is empty.
--- Loads info file, (columns: file nr;exposure time;nr of accumulations;gain;gate width;additional multiplier)
+-- Loads info file for file-wise operations, 
+-- (columns: file nr;pre-amp;exposure time;nr of accumulations;gain;gate width;additional multiplier)
+-- Additionally loads sensitivity info file for point-wise operations 
+-- (columns: file nr;sensitivity;additional multiplier)
 function load_info()
-	-- Loads data from file info file
+	-- Loads data from file info file (file-wise correction)
   F:execute("@+ < "..input_path..input_info_name..":1:2..::")
-  -- Exposure times
-  exposures_data=F:get_data(0)
+  -- Pre amplification
+  pre_amp_data=F:get_data(0)
   -- Length of info file
-  first_filenr=exposures_data[0].x
-  last_filenr=exposures_data[#exposures_data-1].x
+  first_filenr=pre_amp_data[0].x
+  last_filenr=pre_amp_data[#pre_amp_data-1].x
+  -- Exposure times
+  exposures_data=F:get_data(1)
   -- Nr. of accumulations
-  accumulations_data=F:get_data(1)
+  accumulations_data=F:get_data(2)
   -- Gains
-  gains_data=F:get_data(2)
+  gains_data=F:get_data(3)
   -- Gate widths
-  widths_data=F:get_data(3)
+  widths_data=F:get_data(4)
   -- Additional multipliers
-  additional_multipliers=F:get_data(4)
-  -- Makes 5 arrays
+  additional_file_multipliers=F:get_data(5)
+  -- Makes 6 arrays
+  pre_amps={}
   exposures={}
   accumulations={}
   gains={}
   widths={}
-  multipliers={}
-  -- Iterates over all rows and saves data into lua arrays
-  for row=0,#exposures_data-1,1 do
+  file_multipliers={}
+  -- Iterates over all rows for file-wise data and saves data into lua arrays
+  for row=0,#pre_amp_data-1,1 do
+  	pre_amps[row]=pre_amp_data[row].y
     exposures[row]=exposures_data[row].y
     accumulations[row]=accumulations_data[row].y
     gains[row]=gains_data[row].y
     widths[row]=widths_data[row].y
-    multipliers[row]=additional_multipliers[row].y
+    file_multipliers[row]=additional_file_multipliers[row].y
   end
-  -- Deletes info datasets
-  for n=0,5,1 do
+  -- Deletes info datasets (separate from next section in case input file columns
+  -- are screwed up and there are too many)
+  for n=0,9,1 do -- deletes 9 times instead of 6 in case input file is flawed
     F:execute("delete @0")
   end
+  
+  -- Loads data from sensitivity info file (point-wise correction), 
+  -- assumes that the first pixel is 0 like in the spectra
+  F:execute("@+ < "..input_path..input_sensitivity_name..":1:2..::")
+  -- Sensitivity data
+  sensitivities=F:get_data(0)
+  -- Additional point-wise multiplier - for backup
+  additional_point_multipliers=F:get_data(1)
+  -- Makes an array
+  spectra_multiplier={}
+  -- Iterates over all rows for point-wise data and saves data into lua arrays
+  for row=0,#sensitivities-1,1 do
+    spectra_multiplier[row]=sensitivities[row].y*additional_point_multipliers[row].y
+  end
+  -- Deletes info datasets
+  for n=0,9,1 do -- deletes 9 times instead of 2 in case input file is flawed
+    F:execute("delete @0")
+  end
+  
   -- Always uses only the first dataset (plotting hack).
   F:execute("use@0")
-
 end
 ------------------------------------------
 -- Initializes output file, change path if needed
@@ -622,17 +655,29 @@ end
 function init_data2()  
 	-- Loads data from info arrays for specific experiment file
 	--exposure_time=exposures[file_index-first_filenr]
+	pre_amp=pre_amps[file_index-first_filenr]
 	nr_of_accumulations=accumulations[file_index-first_filenr]
 	gain=gains[file_index-first_filenr]
 	gate_width=widths[file_index-first_filenr]
-	additional_multiplier=multipliers[file_index-first_filenr]
+	additional_multiplier=file_multipliers[file_index-first_filenr]
 	-- Calculates the real gain of the signal (from experiments)
 	actual_gain=1.120270358187*math.exp(0.0019597049*gain)
 	-- Compiles a constant to divide current spectrum with it
-	multiplier=additional_multiplier/(gate_width*nr_of_accumulations*actual_gain)--/exposure_time
+	multiplier=additional_multiplier/(pre_amp*gate_width*nr_of_accumulations*actual_gain)--/exposure_time
 	
-	-- Divides dataset with experiment parameters
+	-- Multiplies dataset with experiment parameters
 	F:execute("Y=y*"..multiplier)
+	
+	-- Multiplies points in dataset with sensitivity and additional point-wise multipliers.
+	-- Also does error catching in case input sensitivity has nil values.
+  for row=0,#spectra_multiplier,1 do
+    status, err = pcall(function()
+      F:execute("Y["..row.."]=y["..row.."]*"..spectra_multiplier[row])
+    end)
+    if status == false then
+      print("Error: " .. err)
+    end
+  end
 	
 	-- Cuts out the edges of the spectra
 	F:execute("@0: A = a and not (-1 < x and x < "..start..")")
