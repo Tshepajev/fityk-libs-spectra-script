@@ -34,7 +34,7 @@ way you want it to look, click on the dataset @0 and then run the script.
 nr_of_lines=60
 
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
--- By convention in lua, thhe first index is 1 instead of 0
+-- By convention in lua, the first index is 1 instead of 0
 line_positions=
 {
 -- Most intense peaks 656nm
@@ -489,7 +489,7 @@ guess_initial_gwidth=25
 -- Should the peaks be considered wide? -- somewhat rudimentary
 wide=false
 
--- What is the minimal line gwidth? Functions with gwidt lower than here
+-- What is the minimal line gwidth? Functions with gwidth lower than here
 -- will be considered unphysical and written 0
 minimal_gwidth=0.5
 
@@ -537,7 +537,7 @@ function delete_all()
 end
 ------------------------------------------
 -- Saves info file into separate arrays so that @0 is empty.
--- Loads info file, (columns: file nr;exposure time;nr of accumulations;gain;gate width)
+-- Loads info file, (columns: file nr;exposure time;nr of accumulations;gain;gate width;additional multiplier)
 function load_info()
   F:execute("@+ < "..input_path..input_info_name..":1:2..::")
   -- Loads data from info file
@@ -552,23 +552,27 @@ function load_info()
   gains_data=F:get_data(2)
   -- Gate widths
   widths_data=F:get_data(3)
-  -- Makes 4 arrays
+  -- Additional multipliers
+  additional_multipliers=F:get_data(4)
+  -- Makes 5 arrays
   exposures={}
   accumulations={}
   gains={}
   widths={}
+  multipliers={}
   -- Iterates over all rows and saves data into lua arrays
   for row=0,#exposures_data-1,1 do
     exposures[row]=exposures_data[row].y
     accumulations[row]=accumulations_data[row].y
     gains[row]=gains_data[row].y
     widths[row]=widths_data[row].y
+    multipliers[row]=additional_multipliers[row].y
   end
   -- Deletes info datasets
-  for n=0,4,1 do
+  for n=0,5,1 do
     F:execute("delete @0")
   end
-  -- Always uses only the first dataset.
+  -- Always uses only the first dataset (plotting hack).
   F:execute("use@0")
 end
 ------------------------------------------
@@ -613,22 +617,24 @@ function init_data1()
 end
 ------------------------------------------
 -- Data initialization while looping over datasets
-function init_data2()
-  -- Loads data from info arrays for specific experiment file
-    exposure_time=exposures[file_index-first_filenr]
-    nr_of_accumulations=accumulations[file_index-first_filenr]
-    gain=gains[file_index-first_filenr]
-    gate_width=widths[file_index-first_filenr]
-    -- Calculates the real gain of the signal
-    actual_gain=1.120270358187*math.exp(0.0019597049*gain)
-    division=exposure_time*nr_of_accumulations*actual_gain*gate_width
-
-    -- Divides dataset with experiment parameters
-    F:execute("Y=y/"..division)
-    
-    -- Cuts out the edges of the spectra
-    F:execute("@0: A = a and not (-1 < x and x < "..start..")")
-    F:execute("@0: A = a and not ("..endpoint.." < x and x < 2050)")
+function init_data2()  
+	-- Loads data from info arrays for specific experiment file
+	--exposure_time=exposures[file_index-first_filenr]
+	nr_of_accumulations=accumulations[file_index-first_filenr]
+	gain=gains[file_index-first_filenr]
+	gate_width=widths[file_index-first_filenr]
+	additional_multiplier=multipliers[file_index-first_filenr]
+	-- Calculates the real gain of the signal (from experiments)
+	actual_gain=1.120270358187*math.exp(0.0019597049*gain)
+	-- Compiles a constant to divide current spectrum with it
+	division=gate_width*nr_of_accumulations*actual_gain/additional_multiplier--*exposure_time
+	
+	-- Divides dataset with experiment parameters
+	F:execute("Y=y/"..division)
+	
+	-- Cuts out the edges of the spectra
+	F:execute("@0: A = a and not (-1 < x and x < "..start..")")
+	F:execute("@0: A = a and not ("..endpoint.." < x and x < 2050)")
 end
 ------------------------------------------
 -- Subroutine for fit_functions()

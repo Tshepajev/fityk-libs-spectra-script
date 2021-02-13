@@ -9,3 +9,6 @@ Hardcoded parameter bound constraints for functions as parameter=constant1+const
 
 v1.3
 Changed guess_parameter_constructor() so that gwidth can't go negative. It improved peak detection. Wrote a code that asks whether the user wants to view only 1 experiment. If so Everything runs as usual but only that experiment gets selected and the dataset doesn't get deleted so that you can view what was the result of the output and why from the GUI. Fixed error calculation and changed gain function from polynomial to exponent. Added an option to lower the constant relative to the lowest point in data since the residues lift the constant higher than it should be.
+
+v1.4
+Added an additional multiplier column in load_info() - for backup. 
