@@ -462,8 +462,9 @@ output_path="/Users/jasper/Documents/Magistritöö/Output/"
 
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
-input_info_name="info.txt"
-output_data_name="output.txt"
+input_info_name="Info.txt"
+input_sensitivity_name="Sensitivity.txt"
+output_data_name="Output.txt"
 
 -- What type of files do you use?
 file_end=".asc"
@@ -539,8 +540,8 @@ end
 -- Saves info file into separate arrays so that @0 is empty.
 -- Loads info file, (columns: file nr;exposure time;nr of accumulations;gain;gate width;additional multiplier)
 function load_info()
+	-- Loads data from file info file
   F:execute("@+ < "..input_path..input_info_name..":1:2..::")
-  -- Loads data from info file
   -- Exposure times
   exposures_data=F:get_data(0)
   -- Length of info file
@@ -574,6 +575,7 @@ function load_info()
   end
   -- Always uses only the first dataset (plotting hack).
   F:execute("use@0")
+
 end
 ------------------------------------------
 -- Initializes output file, change path if needed
@@ -627,10 +629,10 @@ function init_data2()
 	-- Calculates the real gain of the signal (from experiments)
 	actual_gain=1.120270358187*math.exp(0.0019597049*gain)
 	-- Compiles a constant to divide current spectrum with it
-	division=gate_width*nr_of_accumulations*actual_gain/additional_multiplier--*exposure_time
+	multiplier=additional_multiplier/(gate_width*nr_of_accumulations*actual_gain)--/exposure_time
 	
 	-- Divides dataset with experiment parameters
-	F:execute("Y=y/"..division)
+	F:execute("Y=y*"..multiplier)
 	
 	-- Cuts out the edges of the spectra
 	F:execute("@0: A = a and not (-1 < x and x < "..start..")")
