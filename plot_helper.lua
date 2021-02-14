@@ -1,8 +1,9 @@
 -- Lua script for Fityk.
 -- Loads nr_of_lines number of Gaussian functions and a constant so that you
 -- can colour them for analyze_and_plot.lua script output
+-- It is convenient to save the coloured setup as default via GUI=>Save Current Config
 
-nr_of_lines=40
+nr_of_lines=60
 
 -- Cleans the program from datasets, functions and variables
 F:execute("reset")
