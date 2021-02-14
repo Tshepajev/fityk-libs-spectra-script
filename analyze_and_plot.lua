@@ -31,7 +31,7 @@ way you want it to look, click on the dataset @0 and then run the script.
 -- Constants, change them
 
 -- Where does the spectra actually start and end? (cutting away the edges) 
-start=510
+start=525
 endpoint=1620
 
 -- What are system paths for input and output folder?
@@ -85,19 +85,20 @@ stop=false
 -- (if former then recommended range is [0,1], if latter then write lower_constant=false).
 lower_constant=0.2
 
--- How many spectra lines are there?
-nr_of_lines=56
+-- How many spectra lines are there? Script checks this nr of elements in the next lists.
+nr_of_lines=53
 
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
 -- By convention in lua, the first index is 1 instead of 0
 line_positions=
 {
+--[[
 -- Most intense peaks 656nm
 972,    --1
 1314,   --2
 1503.3,   --3 x0.3
 -- Other intense peaks
-511,     --4
+--511,     --4
 550.5,     --5
 713,     --6
 1143,    --7
@@ -155,7 +156,7 @@ line_positions=
 1569,	--58
 1591,	--59
 1632	--60 Mo2
-
+--]]
 
 
 
@@ -201,6 +202,70 @@ line_positions=
 1479,   --36
 1595    --37
 --]]
+
+-- Most intense peaks 656nm BAKA
+1012.5,    --1
+1354.5,   --2
+1543.8,   --3 x0.3
+-- Other intense peaks
+--551.5,     --4
+591,     --5
+753.5,     --6
+1183.5,    --7
+1306.4,    --8x
+1386.5,    --9
+1600.2,    --10
+-- Smaller intensity or mathematical peaks
+--492.5,	--11
+--506.8,  --12 Mo2
+--522.5,	--13
+--543.1,  --14 Mo2
+587.5,    --15
+602.5,    --16
+624.5,	--17
+643.5,	--18
+679.5,	--19
+688.9,  --20 Mo2
+690.5,	--21
+709.5,    --22
+736.5,    --23
+740.5,	--24
+800.5,    --25
+852.5,    --26
+864.5,	--27
+895.5,	--28
+904.5,	--29
+951.5,	--30
+956.5,	--31
+975.5,	--32
+988.5,	--33
+1054.5,	--34
+1063.5,   --35
+1084.5,	--36
+1105.5,   --37
+1127.5,	--38
+1145.5,	--39
+1161.5,   --40
+1180.5,   --41
+1195.5,	--42
+1210.5,	--43
+1295.5,	--44
+1307.7, --45x0.2
+1328.5,	--46
+1395.1,	--47 Mo2
+1403.5,   --48
+1435.5,   --49
+1444.8, --50
+1463.5,   --51
+1492.5,   --52
+1537.6, --53x0.2
+1539.6, --54x0.2
+1567.5,   --55
+1584.5,   --56
+1591.5,	--57
+1609.5,	--58
+1631.5,	--59
+1672.5	--60 Mo2
 }
 
 -- How far can the peak shift? If array element is non-0, 
@@ -274,7 +339,7 @@ line_center_domains=
 30,	--1 656nm
 3,	--2
 0.3,	--3
-3,	--4
+--3,	--4
 3,	--5
 3,	--6
 3,	--7
@@ -447,7 +512,7 @@ max_line_gwidths=
 80,	--1 656nm
 4,	--2
 4,	--3
-4,	--4
+--4,	--4
 4,	--5
 4,	--6
 4,	--7
@@ -524,6 +589,7 @@ center_error="-"
 center_errors={}
 gwidth_errors={}
 shape_errors={}
+height_errors={}
 file_check=nil
 experiment_check=nil
 stopscript=false
@@ -706,7 +772,7 @@ function guess_parameter_constructor(linenr)
   -- Shape
   -- Angle variable (3pi/2)
   F:execute("$shape"..dataset_index.."_"..linenr.."=~0")
-  -- shape=sin(~ąngle)
+  -- shape=0.5+0.5*sin(~ąngle) (binds it from 0 to 1)
   parameters=parameters..",shape=0.5+0.5*sin($shape"..dataset_index.."_"..linenr..")"
   
   -- Gwidth
@@ -726,6 +792,11 @@ function guess_parameter_constructor(linenr)
       dataset_index.."_"..linenr..")-1)"
     end
   end
+  
+  -- Forces height to be positive
+  F:execute("$height_variable"..dataset_index.."_"..linenr.."=~1")
+  -- height=abs(height_variable)
+  parameters=parameters..",height=abs($height_variable"..dataset_index.."_"..linenr..")"
   
   parameters=parameters..")"
   return parameters
@@ -817,10 +888,16 @@ function get_errors()
   -- y_error=b*cos(angle)*angle_error
   for linenr=1,nr_of_lines,1 do
     if functions[linenr]:get_param_value("height")>0 then
+      -- Height
+      -- y_error=height_error since abs value in the end gives the derivative as 1
+      F:execute("$height_error=$height_variable"..dataset_index.."_"..linenr..".error")
+      height_errors[linenr]=math.abs(F:get_variable("height_error"):value())
+      
       -- Shape
       F:execute("$shape_error=$shape"..dataset_index.."_"..linenr..".error")
       shape_errors[linenr]=math.abs(0.5*math.cos(F:get_variable("shape"..dataset_index.."_"..linenr):value())
       *F:get_variable("shape_error"):value())
+      
       -- Center
       if line_center_domains[linenr]>0 then
         F:execute("$center_error=$center"..dataset_index.."_"..linenr..".error")
@@ -828,6 +905,7 @@ function get_errors()
         F:get_variable("center"..dataset_index.."_"..linenr):value())
         *F:get_variable("center_error"):value())
       end
+      
       -- Gwidth
       if max_line_gwidths[linenr]>0 then
         if wide then
@@ -900,10 +978,13 @@ function write_output()
         gwidth_error=F:get_variable("gwidth_error"):value()
       end
       
-      -- Dirty workaroud for getting errors
+      --[[ Dirty workaroud for getting errors
       F:execute("$height_error=F["..i.."].height.error")
       -- Finds standard error (form "Curve Fitting" in Fityk manual)
       height_error=F:get_variable("height_error"):value()
+      ]]
+      -- Height error isn't anymore a simple variable since I bound it to positive values
+      height_error=height_errors[i]
       
       -- Writes data into file
       io.write("\t"..functions[i]:get_param_value("height"))
