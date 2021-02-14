@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 1.4
+-- Script version: 1.6
 -- Author: Jasper Ristkok
 
 --[[
@@ -79,497 +79,444 @@ minimal_gwidth=0.5
 -- Do you want to stop for query for continuing after every file? [true/false]
 stop=false
 
--- How much do you want to lower constant according to equation
--- constant_value=minimal_data_value+abs(constant_guess_value-minimal_data_value)*lower_constant
--- or do you just want Fityk to guess constant height 
+-- How much do you want to lower constant upper bound according to equations
+-- max=minimal_data_value+(median_data_value-minimal_data_value)*lower_constant
+-- and
+-- constant_value=(max+min)/2+(max-min)/2*sin(~angle)
+-- or do you just want Fityk to guess constant height between min and median values 
 -- (if former then recommended range is [0,1], if latter then write lower_constant=false).
-lower_constant=0.2
+lower_constant=0.6
 
 -- How many spectra lines are there? Script checks this nr of elements in the next lists.
 nr_of_lines=53
 
+--Whether to use 387 nm parameters instead of 656 nm ones
+is387=false
+
 -- Where are they in pixels? (only the first nr_of_lines lines are used)
 -- By convention in lua, the first index is 1 instead of 0
-line_positions=
-{
---[[
--- Most intense peaks 656nm
-972,    --1
-1314,   --2
-1503.3,   --3 x0.3
--- Other intense peaks
---511,     --4
-550.5,     --5
-713,     --6
-1143,    --7
-1265.9,    --8x
-1346,    --9
-1559.7,    --10
--- Smaller intensity or mathematical peaks
---452,	--11
---466.3,  --12 Mo2
---482,	--13
---502.6,  --14 Mo2
-547,    --15
-562,    --16
-584,	--17
-603,	--18
-639,	--19
-648.4,  --20 Mo2
-650,	--21
-669,    --22
-696,    --23
-700,	--24
-760,    --25
-812,    --26
-824,	--27
-855,	--28
-864,	--29
-911,	--30
-916,	--31
-935,	--32
-948,	--33
-1014,	--34
-1023,   --35
-1044,	--36
-1065,   --37
-1087,	--38
-1105,	--39
-1121,   --40
-1140,   --41
-1155,	--42
-1170,	--43
-1255,	--44
-1267.2, --45x0.2
-1288,	--46
-1354.6,	--47 Mo2
-1363,   --48
-1395,   --49
-1404.3, --50
-1423,   --51
-1452,   --52
-1497.1, --53x0.2
-1499.1, --54x0.2
-1527,   --55
-1544,   --56
-1551,	--57
-1569,	--58
-1591,	--59
-1632	--60 Mo2
---]]
+if is387 then
+  line_positions=
+  {
+  -- Most intense peaks 387nm
+  612,    --1
+  980,    --2
+  1198,   --3
+  -- Other intense peaks
+  522,    --4
+  546,    --5
+  783,    --6
+  810,    --7
+  941,    --8
+  1022,   --9
+  1229,   --10
+  1268,   --11
+  1326,   --12
+  1413,   --13
+  1422,   --14
+  1526,   --15
+  1564,   --16
+  -- Smaller intensity or mathematical peaks
+  457,    --17
+  509,    --18
+  528,    --19
+  633,    --20
+  655,    --21
+  689,    --22
+  733,    --23
+  751,    --24
+  771,    --25
+  802,    --26
+  819,    --27
+  891,    --28
+  965,    --29
+  1008,   --30
+  1031,   --31
+  1090,   --32
+  1108,   --33
+  1280,   --34
+  1354,   --35
+  1479,   --36
+  1595    --37
+  }
+else
+  line_positions=
+  {
+  --[[
+  -- Most intense peaks 656nm
+  972,    --1
+  1314,   --2
+  1503.3,   --3 x0.3
+  -- Other intense peaks
+  --511,     --4
+  550.5,     --5
+  713,     --6
+  1143,    --7
+  1265.9,    --8x
+  1346,    --9
+  1559.7,    --10
+  -- Smaller intensity or mathematical peaks
+  --452,	--11
+  --466.3,  --12 Mo2
+  --482,	--13
+  --502.6,  --14 Mo2
+  547,    --15
+  562,    --16
+  584,	--17
+  603,	--18
+  639,	--19
+  648.4,  --20 Mo2
+  650,	--21
+  669,    --22
+  696,    --23
+  700,	--24
+  760,    --25
+  812,    --26
+  824,	--27
+  855,	--28
+  864,	--29
+  911,	--30
+  916,	--31
+  935,	--32
+  948,	--33
+  1014,	--34
+  1023,   --35
+  1044,	--36
+  1065,   --37
+  1087,	--38
+  1105,	--39
+  1121,   --40
+  1140,   --41
+  1155,	--42
+  1170,	--43
+  1255,	--44
+  1267.2, --45x0.2
+  1288,	--46
+  1354.6,	--47 Mo2
+  1363,   --48
+  1395,   --49
+  1404.3, --50
+  1423,   --51
+  1452,   --52
+  1497.1, --53x0.2
+  1499.1, --54x0.2
+  1527,   --55
+  1544,   --56
+  1551,	--57
+  1569,	--58
+  1591,	--59
+  1632	--60 Mo2
+  --]]
 
 
-
---[[
--- Most intense peaks 387nm
-612,    --1
-980,    --2
-1198,   --3
--- Other intense peaks
-522,    --4
-546,    --5
-783,    --6
-810,    --7
-941,    --8
-1022,   --9
-1229,   --10
-1268,   --11
-1326,   --12
-1413,   --13
-1422,   --14
-1526,   --15
-1564,   --16
--- Smaller intensity or mathematical peaks
-457,    --17
-509,    --18
-528,    --19
-633,    --20
-655,    --21
-689,    --22
-733,    --23
-751,    --24
-771,    --25
-802,    --26
-819,    --27
-891,    --28
-965,    --29
-1008,   --30
-1031,   --31
-1090,   --32
-1108,   --33
-1280,   --34
-1354,   --35
-1479,   --36
-1595    --37
---]]
-
--- Most intense peaks 656nm BAKA
-1012.5,    --1
-1354.5,   --2
-1543.8,   --3 x0.3
--- Other intense peaks
---551.5,     --4
-591,     --5
-753.5,     --6
-1183.5,    --7
-1306.4,    --8x
-1386.5,    --9
-1600.2,    --10
--- Smaller intensity or mathematical peaks
---492.5,	--11
---506.8,  --12 Mo2
---522.5,	--13
---543.1,  --14 Mo2
-587.5,    --15
-602.5,    --16
-624.5,	--17
-643.5,	--18
-679.5,	--19
-688.9,  --20 Mo2
-690.5,	--21
-709.5,    --22
-736.5,    --23
-740.5,	--24
-800.5,    --25
-852.5,    --26
-864.5,	--27
-895.5,	--28
-904.5,	--29
-951.5,	--30
-956.5,	--31
-975.5,	--32
-988.5,	--33
-1054.5,	--34
-1063.5,   --35
-1084.5,	--36
-1105.5,   --37
-1127.5,	--38
-1145.5,	--39
-1161.5,   --40
-1180.5,   --41
-1195.5,	--42
-1210.5,	--43
-1295.5,	--44
-1307.7, --45x0.2
-1328.5,	--46
-1395.1,	--47 Mo2
-1403.5,   --48
-1435.5,   --49
-1444.8, --50
-1463.5,   --51
-1492.5,   --52
-1537.6, --53x0.2
-1539.6, --54x0.2
-1567.5,   --55
-1584.5,   --56
-1591.5,	--57
-1609.5,	--58
-1631.5,	--59
-1672.5	--60 Mo2
-}
+  -- Most intense peaks 656nm BAKA
+  1012.5,    --1
+  1354.5,   --2
+  1543.8,   --3 x0.3
+  -- Other intense peaks
+  --551.5,     --4
+  591,     --5
+  753.5,     --6
+  1183.5,    --7
+  1306.4,    --8x
+  1386.5,    --9
+  1600.2,    --10
+  -- Smaller intensity or mathematical peaks
+  --492.5,	--11
+  --506.8,  --12 Mo2
+  --522.5,	--13
+  --543.1,  --14 Mo2
+  587.5,    --15
+  602.5,    --16
+  624.5,	--17
+  643.5,	--18
+  679.5,	--19
+  688.9,  --20 Mo2
+  690.5,	--21
+  709.5,    --22
+  736.5,    --23
+  740.5,	--24
+  800.5,    --25
+  852.5,    --26
+  864.5,	--27
+  895.5,	--28
+  904.5,	--29
+  951.5,	--30
+  956.5,	--31
+  975.5,	--32
+  988.5,	--33
+  1054.5,	--34
+  1063.5,   --35
+  1084.5,	--36
+  1105.5,   --37
+  1127.5,	--38
+  1145.5,	--39
+  1161.5,   --40
+  1180.5,   --41
+  1195.5,	--42
+  1210.5,	--43
+  1295.5,	--44
+  1307.7, --45x0.2
+  1328.5,	--46
+  1395.1,	--47 Mo2
+  1403.5,   --48
+  1435.5,   --49
+  1444.8, --50
+  1463.5,   --51
+  1492.5,   --52
+  1537.6, --53x0.2
+  1539.6, --54x0.2
+  1567.5,   --55
+  1584.5,   --56
+  1591.5,	--57
+  1609.5,	--58
+  1631.5,	--59
+  1672.5	--60 Mo2
+  }
+end
 
 -- How far can the peak shift? If array element is non-0, 
 -- then bigger shifts are considered lack of peak
 -- Writing the value of the corresponding peak as -1 uses the default 30% domain.
 -- 0 locks the line in place
-line_center_domains=
-{
---[[
-3,	--1 387nm
-3,	--2
-3,	--3
-3,	--4
-3,	--5
-3,	--6
-3,	--7
-3,	--8
-3,	--9
-3,	--10
-3,	--11
-3,	--12
-3,	--13
-3,	--14
-3,	--15
-3,	--16
-3,	--17
-3,	--18
-3,	--19
-3,	--20
-3,	--21
-3,	--22
-3,	--23
-3,	--24
-3,	--25
-3,	--26
-3,	--27
-3,	--28
-3,	--29
-3,	--30
-3,	--31
-3,	--32
-3,	--33
-3,	--34
-3,	--35
-3,	--36
-3,	--37
-3,	--38
-3,	--39
-3,	--40
-3,	--41
-3,	--42
-3,	--43
-3,	--44
-3,	--45
-3,	--46
-3,	--47
-3,	--48
-3,	--49
-3,	--50
-3,	--51
-3,	--52
-3,	--53
-3,	--54
-3,	--55
-3,	--56
-3,	--57
-3,	--58
-3,	--59
-3	--60
-]]
-30,	--1 656nm
-3,	--2
-0.3,	--3
---3,	--4
-3,	--5
-3,	--6
-3,	--7
-0.2,	--8
-3,	--9
-3,	--10
---3,	--11
---0.5,	--12
---3,	--13
---0.5,	--14
-3,	--15
-3,	--16
-3,	--17
-3,	--18
-3,	--19
-0.5,	--20
-3,	--21
-3,	--22
-3,	--23
-3,	--24
-3,	--25
-3,	--26
-3,	--27
-3,	--28
-3,	--29
-3,	--30
-3,	--31
-3,	--32
-3,	--33
-3,	--34
-3,	--35
-3,	--36
-3,	--37
-3,	--38
-3,	--39
-3,	--40
-0.2,	--41
-3,	--42
-3,	--43
-3,	--44
-0.2,	--45
-3,	--46
-0.5,	--47
-3,	--48
-3,	--49
-3,	--50
-3,	--51
-3,	--52
-0.2,	--53
-0.2,	--54
-3,	--55
-3,	--56
-3,	--57
-3,	--58
-3,	--59
-0.5	--60
-}
-
--- How large can the FWHM be? Larger lines are deleted. -1 skips FWHM check.
--- After introducing max_line_gwidths, this variable is rudimentary since you
--- can control funtions' gwidth directly. Write everything here -1.
-max_line_widths=
-{
--1,	--1
--1,	--2
--1,	--3
--1,	--4
--1,	--5
--1,	--6
--1,	--7
--1,	--8
--1,	--9
--1,	--10
--1,	--11
--1,	--12
--1,	--13
--1,	--14
--1,	--15
--1,	--16
--1,	--17
--1,	--18
--1,	--19
--1,	--20
--1,	--21
--1,	--22
--1,	--23
--1,	--24
--1,	--25
--1,	--26
--1,	--27
--1,	--28
--1,	--29
--1,	--30
--1,	--31
--1,	--32
--1,	--33
--1,	--34
--1,	--35
--1,	--36
--1,	--37
--1,     --38
--1,     --39
--1,     --40
--1,     --41
--1,     --42
--1,	--43
--1,	--44
--1,	--45
--1,	--46
--1,	--47
--1,	--48
--1,	--49
--1,	--50
--1,	--51
--1,	--52
--1,	--53
--1,	--54
--1,	--55
--1,	--56
--1,	--57
--1,     --58
--1,     --59
--1     --60
--- etc.
-}
+if is387 then
+  line_center_domains=
+  {
+  3,	--1 387nm
+  3,	--2
+  3,	--3
+  3,	--4
+  3,	--5
+  3,	--6
+  3,	--7
+  3,	--8
+  3,	--9
+  3,	--10
+  3,	--11
+  3,	--12
+  3,	--13
+  3,	--14
+  3,	--15
+  3,	--16
+  3,	--17
+  3,	--18
+  3,	--19
+  3,	--20
+  3,	--21
+  3,	--22
+  3,	--23
+  3,	--24
+  3,	--25
+  3,	--26
+  3,	--27
+  3,	--28
+  3,	--29
+  3,	--30
+  3,	--31
+  3,	--32
+  3,	--33
+  3,	--34
+  3,	--35
+  3,	--36
+  3,	--37
+  3,	--38
+  3,	--39
+  3,	--40
+  3,	--41
+  3,	--42
+  3,	--43
+  3,	--44
+  3,	--45
+  3,	--46
+  3,	--47
+  3,	--48
+  3,	--49
+  3,	--50
+  3,	--51
+  3,	--52
+  3,	--53
+  3,	--54
+  3,	--55
+  3,	--56
+  3,	--57
+  3,	--58
+  3,	--59
+  3	--60
+  }
+else
+  line_center_domains=
+  {
+  10,	--1 656nm
+  3,	--2
+  0.3,	--3
+  --3,	--4
+  3,	--5
+  3,	--6
+  3,	--7
+  0.2,	--8
+  3,	--9
+  3,	--10
+  --3,	--11
+  --0.5,	--12
+  --3,	--13
+  --0.5,	--14
+  3,	--15
+  3,	--16
+  3,	--17
+  3,	--18
+  3,	--19
+  0.5,	--20
+  3,	--21
+  3,	--22
+  3,	--23
+  3,	--24
+  3,	--25
+  3,	--26
+  3,	--27
+  3,	--28
+  3,	--29
+  3,	--30
+  3,	--31
+  3,	--32
+  3,	--33
+  3,	--34
+  3,	--35
+  3,	--36
+  3,	--37
+  3,	--38
+  3,	--39
+  3,	--40
+  0.2,	--41
+  3,	--42
+  3,	--43
+  3,	--44
+  0.2,	--45
+  3,	--46
+  0.5,	--47
+  3,	--48
+  3,	--49
+  3,	--50
+  3,	--51
+  3,	--52
+  0.2,	--53
+  0.2,	--54
+  3,	--55
+  3,	--56
+  3,	--57
+  3,	--58
+  3,	--59
+  0.5	--60
+  }
+end
 
 -- Binds gwidths to given maximum gwidth. If corresponding gwidth
 -- <=0 then doesn't bind line gwidth
-max_line_gwidths=
-{
---[[
-4,	--1 387nm
-4,	--2
-4,	--3
-4,	--4
-4,	--5
-4,	--6
-4,	--7
-4,	--8
-4,	--9
-4,	--10
-4,	--11
-4,	--12
-4,	--13
-5,	--14
-4,	--15
-5,	--16
-8,	--17
-4,	--18
-4,	--19
-4,	--20
-11,	--21
-4,	--22
-7,	--23
-4,	--24
-4,	--25
-5,	--26
-4,	--27
-5,	--28
-7,	--29
-4,	--30
-8,	--31
-8,	--32
-4,	--33
-6,	--34
-8,	--35
-4,	--36
-7,	--37
-]]
-80,	--1 656nm
-4,	--2
-4,	--3
---4,	--4
-4,	--5
-4,	--6
-4,	--7
-4,	--8
-4,	--9
-4,	--10
---4,	--11
---4,	--12
---4,	--13
---4,	--14
-4,	--15
-4,	--16
-4,	--17
-4,	--18
-4,	--19
-4,	--20
-4,	--21
-4,	--22
-4,	--23
-4,	--24
-4,	--25
-4,	--26
-4,	--27
-4,	--28
-4,	--29
-4,	--30
-4,	--31
-4,	--32
-4,	--33
-4,	--34
-4,	--35
-4,	--36
-4,	--37
-4,	--38
-4,	--39
-4,	--40
-4,	--41
-4,	--42
-4,	--43
-4,	--44
-4,	--45
-4,	--46
-4,	--47
-4,	--48
-4,	--49
-4,	--50
-4,	--51
-4,	--52
-2,	--53
-2,	--54
-4,	--55
-4,	--56
-4,	--57
-4,	--58
-4,	--59
-4	--60
-}
+if is387 then
+  max_line_gwidths=
+  {
+  4,	--1 387nm
+  4,	--2
+  4,	--3
+  4,	--4
+  4,	--5
+  4,	--6
+  4,	--7
+  4,	--8
+  4,	--9
+  4,	--10
+  4,	--11
+  4,	--12
+  4,	--13
+  5,	--14
+  4,	--15
+  5,	--16
+  8,	--17
+  4,	--18
+  4,	--19
+  4,	--20
+  11,	--21
+  4,	--22
+  7,	--23
+  4,	--24
+  4,	--25
+  5,	--26
+  4,	--27
+  5,	--28
+  7,	--29
+  4,	--30
+  8,	--31
+  8,	--32
+  4,	--33
+  6,	--34
+  8,	--35
+  4,	--36
+  7,	--37
+  }
+else
+  max_line_gwidths=
+  {
+  80,	--1 656nm
+  4,	--2
+  4,	--3
+  --4,	--4
+  4,	--5
+  4,	--6
+  4,	--7
+  4,	--8
+  4,	--9
+  4,	--10
+  --4,	--11
+  --4,	--12
+  --4,	--13
+  --4,	--14
+  4,	--15
+  4,	--16
+  4,	--17
+  4,	--18
+  4,	--19
+  4,	--20
+  4,	--21
+  4,	--22
+  4,	--23
+  4,	--24
+  4,	--25
+  4,	--26
+  4,	--27
+  4,	--28
+  4,	--29
+  4,	--30
+  4,	--31
+  4,	--32
+  4,	--33
+  4,	--34
+  4,	--35
+  4,	--36
+  4,	--37
+  4,	--38
+  4,	--39
+  4,	--40
+  4,	--41
+  4,	--42
+  4,	--43
+  4,	--44
+  4,	--45
+  4,	--46
+  4,	--47
+  4,	--48
+  4,	--49
+  4,	--50
+  4,	--51
+  4,	--52
+  2,	--53
+  2,	--54
+  4,	--55
+  4,	--56
+  4,	--57
+  4,	--58
+  4,	--59
+  4	--60
+  }
+end
 ----------------------------------------------------------------------
 -- Change constants above
 
@@ -585,6 +532,8 @@ widths=nil
 file_multipliers=nil
 spectra_multiplier=nil
 
+minimal_data_value=nil
+median_data_value=nil
 center_error="-"
 center_errors={}
 gwidth_errors={}
@@ -642,7 +591,7 @@ function load_info()
   file_multipliers={}
   -- Iterates over all rows for file-wise data and saves data into lua arrays
   for row=0,#pre_amp_data-1,1 do
-  	pre_amps[row]=pre_amp_data[row].y
+    pre_amps[row]=pre_amp_data[row].y
     exposures[row]=exposures_data[row].y
     accumulations[row]=accumulations_data[row].y
     gains[row]=gains_data[row].y
@@ -767,7 +716,7 @@ function guess_parameter_constructor(linenr)
     -- Center is inside given domain
     -- center=line_position+domain*sin(~angle)
     parameters=parameters..line_positions[linenr].."+"..
-    line_center_domains[linenr].."*sin($center"..dataset_index.."_"..linenr..")"
+      line_center_domains[linenr].."*sin($center"..dataset_index.."_"..linenr..")"
   end
   -- Shape
   -- Angle variable (3pi/2)
@@ -783,13 +732,13 @@ function guess_parameter_constructor(linenr)
     if wide then
       -- gwidth=initial_gwidth+(initial_gwidth-min_gwidth)/2*(sin(~ąngle)-1)
       parameters=parameters..",gwidth="..guess_initial_gwidth.."+"..
-      ((guess_initial_gwidth-minimal_gwidth)/2).."*(sin($gwidth"..
-      dataset_index.."_"..linenr..")-1)"
+        ((guess_initial_gwidth-minimal_gwidth)/2).."*(sin($gwidth"..
+        dataset_index.."_"..linenr..")-1)"
     else
       -- gwidth=max_width+(max_width-min_width)/2*(sin(~ąngle)-1)
       parameters=parameters..",gwidth="..max_line_gwidths[linenr].."+"..
-      ((max_line_gwidths[linenr]-minimal_gwidth)/2).."*(sin($gwidth"..
-      dataset_index.."_"..linenr..")-1)"
+        ((max_line_gwidths[linenr]-minimal_gwidth)/2).."*(sin($gwidth"..
+        dataset_index.."_"..linenr..")-1)"
     end
   end
   
@@ -807,19 +756,33 @@ end
 -- In the latter case, highest peak is found in range and then center
 -- gets locked in place.
 function fit_functions()
-  F:execute("guess Constant")
-  -- if user wants then constant gets an average value of current constant
-  -- height and minimal data value
+  -- Tries to account for wide H-line. The constant is bound between minimal data value
+  -- and median data value. Otherwise constant is fitted too high because of wide H-line.
+  -- Lowest constant bound
+  F:execute("$min_data_value=min(y if (x>"..start.." and x<"..endpoint.."))")
+  minimal_data_value=F:get_variable("min_data_value"):value()
+  -- Highest constant bound
+  F:execute("$median_data_value=centile(50, y if (x>"..start.." and x<"..endpoint.."))")
+  median_data_value=F:get_variable("median_data_value"):value()
+  
+    
+  -- Constant angle variable
+  F:execute("$constant"..dataset_index.."=~0")
+  
+  -- if user wants then constant gets a value between certain value and minimal data value
   if lower_constant then
-    -- reads defined functions e.g constant
-    functions=F:get_components(0)
-    F:execute("$min_data_value=min(y if (x>"..start.." and x<"..endpoint.."))")
-    constant_guess_value=functions[0]:get_param_value("a")
-    minimal_data_value=F:get_variable("min_data_value"):value()
-    constant_guess_value=minimal_data_value+math.abs(constant_guess_value-minimal_data_value)*lower_constant
-    constant_variable=functions[0]:var_name("a")
-    F:execute("$"..constant_variable.."="..constant_guess_value)
+    max_constant_value=minimal_data_value+(median_data_value-minimal_data_value)*lower_constant
+    -- constant=(max+min)/2+(max-min)/2*sin(~angle)
+    constant_parameters=((max_constant_value+minimal_data_value)/2).."+"..
+      ((max_constant_value-minimal_data_value)/2).."*sin($constant"..dataset_index..")"
+  -- Else binds constant to be fitted between median and minimal data value
+  else
+    -- constant=(median+min)/2+(median-min)/2*sin(~angle)
+    constant_parameters=((median_data_value+minimal_data_value)/2).."+"..
+      ((median_data_value-minimal_data_value)/2).."*sin($constant"..dataset_index..")"
   end
+  F:execute("guess Constant(a=~"..constant_parameters..")")
+  
   -- Iterates over lines
   for linenr=1,nr_of_lines,1 do
     -- Globalizes linenr from for loop for variable naming
@@ -834,50 +797,10 @@ function fit_functions()
       print("Error: " .. err)
     end
   end
+
+  F:execute("@0: fit")
   F:execute("@0: fit")
   print("Experiment: "..file_index..separator..dataset_index)
-end
-------------------------------------------
--- Gives functions 0-height if they are negative or 
--- center is shifted further than defined in center domains array
-function check_functions()
-  -- Loops 2 times
-  for i=1,2,1 do 
-    -- Writes constant as 0 if it's negative
-    if (functions[0]:get_param_value("a")<0) then
-      constant_variable=functions[0]:var_name("a")
-      F:execute("$"..constant_variable.."=0")
-    end
-    -- Iterates over functions
-    for i=1,nr_of_lines,1 do
-      -- Checks if line has negative height
-      negative_height=(functions[i]:get_param_value("height")<0)
-      -- Checks if line is too wide
-      if max_line_widths[i]<0 then
-        too_wide=false
-      else
-        gaussian_width=(functions[i]:get_param_value("GaussianFWHM"))
-        lorentzian_width=(functions[i]:get_param_value("LorentzianFWHM"))
-        too_wide=(math.abs(gaussian_width)>max_line_widths[i] or 
-        math.abs(lorentzian_width)>max_line_widths[i])
-      end
-      -- Checks line center position
-      too_far=(math.abs(functions[i]:get_param_value("center")-line_positions[i])>line_center_domains[i])
-      -- Checks line gwidth in respect to the minimal gwidth
-      too_thin=((math.abs(functions[i]:get_param_value("gwidth"))-minimal_gwidth)<0)
-      -- If there's no peak (peak<0) or if the line has domains defined 
-      -- and the center is not in range 
-      -- or line is too wide then peak is considered absent
-      if (negative_height or too_wide or too_far or too_thin) then
-        -- Finds height variable for given function
-        height_variable=functions[i]:var_name("height")
-        F:execute("$"..height_variable.."=0")
-      end
-    end
-    -- Refits the functions
-    F:execute("@0: fit")
-    print("Experiment: "..file_index..separator..dataset_index)
-  end
 end
 ------------------------------------------
 -- Saves line parameters' errors. It gets errors from $_variable.parameter.error.
@@ -938,8 +861,14 @@ function write_output()
   if (functions[0]:get_param_value("a")==0 or lower_constant) then
     constant_error="-"
   else
-    F:execute("$a_cov=F[0].a.error")
-    constant_error=F:get_variable("a_cov"):value()
+    F:execute("$constant_error=$constant"..dataset_index..".error")
+    constant_error=math.abs((median_data_value-minimal_data_value)/2*math.cos(
+      F:get_variable("constant"..dataset_index):value())*
+      F:get_variable("constant_error"):value())
+    
+    
+    --F:execute("$a_cov=F[0].a.error") -- it's not anymore simple variable because of bounds
+    --constant_error=F:get_variable("a_cov"):value()
   end
   -- Writes dataset info
   io.write(file_index..separator..dataset_index)
@@ -1092,7 +1021,6 @@ for n=first_filenr,last_filenr,1 do
     -- Finds dataset functions
     functions=F:get_components(0)
     
-    check_functions()
     get_errors()
     
     -- if using 1 experiment view then writes dataset index as the number for output
@@ -1125,5 +1053,10 @@ for n=first_filenr,last_filenr,1 do
   end
   
   print("File nr "..file_index.." done.")
+  
+  -- Garbage collection
+  -- https://stackoverflow.com/questions/28320213/why-do-we-need-to-call-luas-collectgarbage-twice
   collectgarbage("collect")
+  collectgarbage("collect")
+  print(collectgarbage("count"))
 end

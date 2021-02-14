@@ -15,3 +15,6 @@ Added an additional multiplier column in load_info() - for backup.
 
 v1.5
 Added pre-amp correction and point-wise multiplication for correction for e.g spectral sensitivity.
+
+v1.6
+Bound constant between minimal data value and median data value (can be modified with lower_constant variable). Constant gets lifted up because of peaks so those are physical bounds for background radiation. Removed max_line_widths because lines are bound by gwidths anyways. Removed check_functions since all variables are locked by user bounds now.
