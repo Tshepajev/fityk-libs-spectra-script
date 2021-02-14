@@ -14,4 +14,4 @@ v1.4
 Added an additional multiplier column in load_info() - for backup. 
 
 v1.5
-Added pre-amp correction and point-wise multiplication for correction for e.g spectral sensitivity.
+Added pre-amp correction and point-wise multiplication for correction for e.g spectral sensitivity. Also bound height to a variable that can't go negative.
