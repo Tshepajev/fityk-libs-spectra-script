@@ -41,7 +41,7 @@ processing time (s) = 3.174 * exp(0.031 * nr_of_lines)
 
 ## Example folder
 
-I added an example folder in which there are 2 different cases (different spectral region) with 3 spectra series (6 spectra in 1 file), an example info, sensitivity and stopscript file. For both cases there is an output folder in which you can see the results for those inputs. Also for both examples I added the script with necessary constants. This means the example scripts are ready to be excecuted with the example inputs for testing.
+I added an example folder in which there are 2 different cases (different spectral region) with 3 spectra series (6 spectra in 1 file), an example info, sensitivity and stopscript file. For both cases there is an output folder in which you can see the results for those inputs. Also for both examples I added the script with necessary constants. This means the example scripts are ready to be excecuted with the example inputs for testing (although you have to specify your system path in the constants).
 
 In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2502 lines took c.a 70 min. I have shown these 3 different situations:
 * 2 - many high peaks
