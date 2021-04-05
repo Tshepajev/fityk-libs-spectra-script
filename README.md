@@ -26,7 +26,7 @@ There are 2 scripts.
 1. "analyze.lua" is foolproof and should work with cfityk. However, I primarily use the next one so analyze.lua is waaaaaaaay behind in features (about 1 year of features). I won't use or talk about this code anymore.
 2. "analyze_and_plot.lua" is meant to be used with the GUI version. I can't guarantee that the script will work for all different computers because I'm using GUI through script, athough plotting with scripts isn't (fully) supported. Also I have only tested the script on my MacOS laptop.
 
-The script is half hardcoded. That means you might have to dive into the code to have it do exactly what you want. Also I have used a few hacks (at least in my opinion) because I couldn't find any better solutions or more info about Fityk. This is also the primary purpose of sharing this script. Moreover, EVERYTHING I write might be critical for the code. Finally, please bear in mind that I'm not a programmer so the code will be sub-optimal.
+The script is half hardcoded. That means you might have to dive into the code to have it do exactly what you want. Also I have used a few hacks (at least in my opinion) because I couldn't find any better solutions or more info about Fityk. This is also the primary purpose of sharing this script. Moreover, EVERYTHING I write might be critical for the code. Finally, please bear in mind that I'm not a programmer and this was my first contact with LUA so the code will be sub-optimal.
 
 The script is written for spectra files gained from SOLIS software using Andor iStar340T ICCD camera. The files are generic columnar files where 1st column is pixel value and all other columns are different experiments' intensities.
 
