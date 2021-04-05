@@ -43,17 +43,16 @@ processing time (s) = 3.174 * exp(0.031 * nr_of_lines)
 
 I added an example folder in which there are 2 different cases (different spectral region) with 3 spectra series (6 spectra in 1 file), an example info, sensitivity and stopscript file. For both cases there is an output folder in which you can see the results for those inputs. Also for both examples I added the script with necessary constants. This means the example scripts are ready to be excecuted with the example inputs for testing.
 
-In the 387 nm folder I have shown 3 different situations.
-2 - many high peaks
-3 - HUGE noise
-4 - few peaks
-Processing 3 files e.g 18 spectra e.g 2502 lines took c.a 70 min.
+In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2502 lines took c.a 70 min. I have shown these 3 different situations:
+* 2 - many high peaks
+* 3 - HUGE noise
+* 4 - few peaks
 
-In the 656 nm folder I have shown the next situations.
-582 - clean spectra with thin H-line
-583 - clean spectra with low noise
-584 - noisy spectra with wide H-line and large continuum signal
-Processing 3 files e.g 18 spectra e.g 2862 lines took c.a 130 min.
+
+In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2862 lines took c.a 130 min. I have shown the next situations:
+* 582 - clean spectra with thin H-line
+* 583 - clean spectra with low noise
+* 584 - noisy spectra with wide H-line and large continuum signal
 
 
 (Note to my future self: corresponding names are 2=2; 3=13; 4=291; 582=582; 583=593; 584=604)
