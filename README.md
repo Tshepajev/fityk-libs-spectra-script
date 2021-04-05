@@ -36,6 +36,7 @@ For me (Macbook Pro 3,1 GHz Intel Core i5, using 1 instance of Fityk (a.k.a 25-5
 
 Roughly the time it takes to process 1 spectra in seconds is:
 processing time (s) = 3.174 * exp(0.031 * nr_of_lines)
+
 ---
 
 ## Example folder
