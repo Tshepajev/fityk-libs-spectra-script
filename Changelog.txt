@@ -1,20 +1,54 @@
 v1.0
-Wrote script that reads all the files defined in info.txt, fits peaks and outputs peak parameters.
+Wrote script that reads all the files defined in info.txt, fits peaks and 
+outputs peak parameters.
 
 v1.1
-Added features like initial peak center constraints and function width checking. Improved error output when locking function variables.
+Added features like initial peak center constraints and function width checking. 
+Improved error output when locking function variables.
 
 v1.2
-Hardcoded parameter bound constraints for functions as parameter=constant1+constant2*sin(variable). Fityk had constraints for initial guessing but not for additional fitting. Now performance is significantly lower but numerical stability is higher.
+Hardcoded parameter bound constraints for functions as 
+parameter=constant1+constant2*sin(variable). Fityk had constraints for initial guessing 
+but not for additional fitting. Now performance is significantly lower but 
+numerical stability is higher.
 
 v1.3
-Changed guess_parameter_constructor() so that gwidth can't go negative. It improved peak detection. Wrote a code that asks whether the user wants to view only 1 experiment. If so Everything runs as usual but only that experiment gets selected and the dataset doesn't get deleted so that you can view what was the result of the output and why from the GUI. Fixed error calculation and changed gain function from polynomial to exponent. Added an option to lower the constant relative to the lowest point in data since the residues lift the constant higher than it should be.
+Changed guess_parameter_constructor() so that gwidth can't go negative. 
+It improved peak detection. Wrote a code that asks whether the user wants to 
+view only 1 experiment. If so Everything runs as usual but only that experiment 
+gets selected and the dataset doesn't get deleted so that you can view what was 
+the result of the output and why from the GUI. Fixed error calculation and changed 
+gain function from polynomial to exponent. Added an option to lower the constant 
+relative to the lowest point in data since the residues lift the constant higher 
+than it should be.
 
 v1.4
 Added an additional multiplier column in load_info() - for backup. 
 
 v1.5
-Added pre-amp correction and point-wise multiplication for correction for e.g spectral sensitivity.
+Added pre-amp correction and point-wise multiplication for correction for e.g 
+spectral sensitivity.
 
 v1.6
-Bound constant between minimal data value and median data value (can be modified with lower_constant variable). Constant gets lifted up because of peaks so those are physical bounds for background radiation. Removed max_line_widths because lines are bound by gwidths anyways. Removed check_functions since all variables are locked by user bounds now.
+Bound constant between minimal data value and median data value 
+(can be modified with lower_constant variable). Constant gets lifted up because 
+of peaks so those are physical bounds for background radiation. 
+Removed max_line_widths because lines are bound by gwidths anyways. 
+Removed check_functions since all variables are locked by user bounds now.
+
+v1.7
+Fixed constant binding. Now if noise lowers minimal or median data value below 0 
+then instead of the corresponding value 0 is used. Also removed double simple variable 
+from constant. Voigt height is initially written as max data value instead of 1.
+
+v1.8
+Separated function and dataset deletion to different definitions. 
+Added variable deletion definition and added it to delete_all(). Fixed RAM hogging. 
+The culprit was that variables didn't get deleted with functions and for longer 
+runs processing time went exponentially up (e.g 114 peaks and 2048 px went 
+from 4 min to 4 h in 6 iterations).
+Changed file overwrite/append question so that default (enter) would result in appending. 
+(Re-)added constant error like Voigt errors. Why should I leave out constant error if
+Voigt lines are output when Voigts are also bound?
+Tidied up comments in code.
+Updated readme and examples.

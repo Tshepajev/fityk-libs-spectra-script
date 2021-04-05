@@ -32,7 +32,7 @@ way you want it to look, click on the dataset @0 and then run the script.
 -- Constants, change them!
 
 --Whether to use 387 nm parameters instead of 656 nm ones
-is387=false
+is387=true
 
 -- Where does the spectra actually start and end? (cutting away the edges) 
 if is387 then
@@ -45,8 +45,8 @@ end
 
 -- What are system paths for input and output folder?
 -- Folders have to exist beforehand.
-input_path="/Users/jasper/Documents/Magistritöö/Andmetöötlus/1.etapp/Input/"
-output_path="/Users/jasper/Documents/Magistritöö/Andmetöötlus/1.etapp/Output/"
+input_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/387nm_Mo_example/Input/"
+output_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/387nm_Mo_example/Output/"
 
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
