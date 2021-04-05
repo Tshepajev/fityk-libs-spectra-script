@@ -63,8 +63,8 @@ In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2862 lines to
 
 1. Download and install Fityk
 2. Put the spectra files, info file, sensitivity file and stopscript.txt in an input folder.
-	* The spectra files have to be named as subsequent integers (e.g. as in the example 37, 38, 39...)
-	* Info file has to have 5 columns: file number, pre-a,plification, exposure time, number of accumulations, gain, gate width and additional multiplier. If these parameters do not apply for you, write them as 1-s (except for gain, write gain as 0). Currently exposure time isn't used but I haven't changed the indexes either so it remains as required column.
+	* The spectra files have to be named as subsequent integers (e.g. as in the example 582, 583, 584...)
+	* Info file has to have 5 columns: file number, pre-amplification, exposure time, number of accumulations, gain, gate width and additional multiplier. If these parameters do not apply for you, write them as 1-s (except for gain, write gain as 0). Currently exposure time isn't used but I haven't changed the indexes either so it remains as required column.
 	* stopcscript.txt is for stopping the script without quitting Fityk. If the file has any content, script will exit the processing loop after outputting data. If you write something in stopscript.txt you also have to save the file for changes to be applied.
 3. Edit the script through Fityk or with a text editor. Change the constants at the beginning. You might have to try out multiple different constant values so that the script will work for your application. The 1 experiment mode is good for testing constant values.  Also I found out that for my application it's best to fill the spectra with Voigt lines. Most of these might not be physical but oh boy does it improve fitting of the physical lines. That's why 656 nm example files have so many lines.
 4. Run Fityk and use the script.
