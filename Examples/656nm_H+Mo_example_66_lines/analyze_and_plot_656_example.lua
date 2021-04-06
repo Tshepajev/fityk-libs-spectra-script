@@ -45,8 +45,8 @@ end
 
 -- What are system paths for input and output folder?
 -- Folders have to exist beforehand.
-input_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example 66 lines/Input/"
-output_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example 66 lines/Output/"
+input_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example_66_lines/Input/"
+output_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example_66_lines/Output/"
 
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
