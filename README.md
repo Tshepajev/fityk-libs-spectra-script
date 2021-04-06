@@ -23,7 +23,7 @@ If you want to read the code, I advise to read Fityk's [manual](https://fityk.ni
 
 There are 2 scripts.
 
-1. "analyze.lua" is foolproof and should work with cfityk. However, I primarily use the next one so analyze.lua is waaaaaaaay behind in features (about 1 year of features). I won't use or talk about this code anymore.
+1. "analyze.lua" is foolproof and should work with cfityk. However, I only use the next one so analyze.lua is waaaaaaaay behind in features (about 1 year of features). I won't use or talk about this code anymore.
 2. "analyze_and_plot.lua" is meant to be used with the GUI version. I can't guarantee that the script will work for all different computers because I'm using GUI through script, athough plotting with scripts isn't (fully) supported. Also I have only tested the script on my MacOS laptop.
 
 The script is half hardcoded. That means you might have to dive into the code to have it do exactly what you want. Also I have used a few hacks (at least in my opinion) because I couldn't find any better solutions or more info about Fityk. This is also the primary purpose of sharing this script. Moreover, EVERYTHING I write might be critical for the code. Finally, please bear in mind that I'm not a programmer and this was my first contact with LUA so the code will be sub-optimal.
@@ -41,7 +41,7 @@ processing time (s) = 3.174 * exp(0.031 * nr_of_lines)
 
 ## Example folder
 
-I added an example folder in which there are 2 different cases (different spectral region) with 3 spectra series (6 spectra in 1 file), an example info, sensitivity and stopscript file. For both cases there is an output folder in which you can see the results for those inputs. Also for both examples I added the script with necessary constants. This means the example scripts are ready to be excecuted with the example inputs for testing (although you have to specify your system path in the constants).
+I added an example folder in which there are 2 different cases (different spectral region) with 3 spectra series (6 spectra in 1 file), an example info, sensitivity and stopscript file. For both cases there is an output folder in which you can see the results for those inputs. Also for both examples I added the script with necessary constants. This means the example scripts are ready to be excecuted with the example inputs for testing (although you have to specify your system path in the constants). I also added an example for 656 nm region with only 66 lines. This would be the easiest to test.
 
 In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2502 lines took c.a 70 min. I have shown these 3 different situations:
 * 2 - many high peaks
@@ -49,7 +49,7 @@ In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2502 lines to
 * 4 - few peaks
 
 
-In the 387 nm example folder processing 3 files e.g 18 spectra e.g 2862 lines took c.a 130 min. I have shown the next situations:
+In the 656 nm example 159 line folder processing 3 files e.g 18 spectra e.g 2862 lines took c.a 130 min. The second 656 nm example with 66 lines (1188 lines in total) took c.a 10 min. I have shown the next situations:
 * 582 - clean spectra with thin H-line
 * 583 - clean spectra with low noise
 * 584 - noisy spectra with wide H-line and large continuum signal

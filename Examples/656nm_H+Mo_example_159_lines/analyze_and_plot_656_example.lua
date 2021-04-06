@@ -45,8 +45,8 @@ end
 
 -- What are system paths for input and output folder?
 -- Folders have to exist beforehand.
-input_path="/Users/jasper/Documents/Magistritöö/Andmetöötlus/1.etapp/Input/"
-output_path="/Users/jasper/Documents/Magistritöö/Andmetöötlus/1.etapp/Output/"
+input_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example_159_lines/Input/"
+output_path="/Users/jasper/repos/fityk-libs-spectra-script/Examples/656nm_H+Mo_example_159_lines/Output/"
 
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
@@ -256,8 +256,9 @@ if is387 then
 else
   line_positions=
   {
-  -- Most intense peaks = I; Other intense peaks = O; 
-  -- rest are smallest or unphysical, mathematical peaks
+  -- Most intense peaks 656nm  
+  -- Other intense peaks
+  -- Smaller intensity or mathematical peaks
   973,  --1  I  -- H-line
   420,  --2  O
   431,  --3
