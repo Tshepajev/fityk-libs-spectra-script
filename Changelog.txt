@@ -52,3 +52,17 @@ Changed file overwrite/append question so that default (enter) would result in a
 Voigt lines are output when Voigts are also bound?
 Tidied up comments in code.
 Updated readme and examples.
+
+v1.9
+Found out that shape range is [0:inf] instead of [0:1]. Added an option to fit locked 
+Voigt lines for specified lines. Voigt lines' shapes are locked to 1e6 so that basically 
+it's pure Lorentzian but with 4 parameters so that output is still formatted the same way.
+Shapes are still bound to [0:1] since the fit converges always on a local minima so even
+if a line is Lorentzian it is still fitted with the shape around the starting 
+parameter. e.g if start-shape is 0.5, shape will be around e.g [0:2].
+Added an option to transform all line_positions by user-defined equation.
+Put load_info() after overwrite and script mode queries in case user forgot to change
+info and sensitivity file.
+Removed 656 nm region info and left only a few example points in arrays so the code could 
+be understood better. Examples are there for a reason, after all.
+
