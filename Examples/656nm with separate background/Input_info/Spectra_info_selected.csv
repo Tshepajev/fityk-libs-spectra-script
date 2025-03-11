@@ -1,0 +1,5 @@
+Filename,Pixel correction filename,Lines filename,Background filename,Nr. of spectra accumulations,Camera pre amplification,Camera gain,Camera gate width (s),Series length,Additional multiplier,Additional additive
+HPW257A_05,,,04_background_1300,,,1300,0.000002,50,,
+WFW_1028_11,,,05_background_2000,,,2000,0.000002,10,,
+04_background_2000,,,Background_info,,,2000,0.000002,20,,
+04_background_1300,,,Background_info,,,1300,0.000002,20,,

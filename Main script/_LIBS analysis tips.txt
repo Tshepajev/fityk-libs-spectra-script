@@ -1,0 +1,120 @@
+This file describes how to use the Fityk and the script analyze_and_plot.lua to fit lines in an actual experimetal campaign.
+
+* Read "_README script.txt" and prepare Fityk as described in it.
+
+
+* I tend to use Excel for creating the files in info_folder. After creating a sheet with the necessary info I export 
+it into csv. Sometimes Excel adds non-unicode characters like no break space. Then these must be removed. If the sheet
+contains more fields as equations that result in blank fields then the output ASCII will have empty comma lines at the
+end. The script reads in the files faster if these comma lines are deleted beforehand (if there's tens of thousands
+of these).
+
+* I have written code that checks the values of input info. If there's an error in a value or it's blank then the 
+default value is written instead. If an entire column is missing then it gets written full of default values. However,
+I haven't fully tested every nuance, so there's a chance of crashes when being sloppy with the input info.
+
+
+* Pixel_info.csv file
+To get actual wavelengths it's advised to take many identified spectral lines and do a linear regression for
+the measured locations vs database wavelengths. It's best to check for misidentified lines during the process (outliers
+in the regression). Finally generate a column in the output Excel sheet which takes measured unit as input and gives 
+the result of the regression function.
+
+This file contains the pixel-wise correction values.
+Sensitivity column expects multipliers. That is, inverse values of spectral sensitivity. The y-axis values are 
+multiplied with the values in this column pixel-wise. If there is no calibration data then write the entire column full of 
+values 1. If there is calibration data (e.g. W lamp output) then find the function/model of the curve of the 
+calibration lamp's expected output and generate values for every measured unit. Then take the measured calibration
+lamp output and divide the expected output values with the actual output values to get the multipliers. It's advisable
+to smooth the resulting multiplier curve to diminish the influence of noise.
+
+The easiest way to identify lines is to calculate spectral sensitivity and multiply the sum of many raw spectra (e.g. 
+50-100 laser shots deep in bulk layer where situation doesn't change much). Now I add line functions to all appeared 
+lines and fit the spectrum. After a good fit for all lines has been acquired, I copy-paste the center parameters of the 
+relevant lines into the linear regression. Fityk's GUI is good for this process (except for multiplying 2 datasets 
+pixel-wise, for that use utility scripts from the repository).
+
+
+* Spectra_info.csv file
+This file contains the spectrum-wise correction values. The gain used by the camera needs the gain function from the 
+camera datasheet. This function needs to be written in user_constants.lua into the variable gain_functions.
+This file can be split into multiple files and renamed in order to have multithreading and processing multiple datasets
+simultaneously.
+
+
+* Lines_info.csv file
+The best results in fitting are gained when fitting all of the lines that appear in the spectrum, not only the identified
+lines. This is because if an unidentified line is near an interesting line but it isn't fitted, then the interesting line
+tries to account for the pixels of the other line, making it wider and trying to shift it. The script used to write
+noise-level lines as 0 intensity, but currently it's disabled because I haven't found a reliable way to measure if a line
+is too small. Generally, you can add many weak lines with the only downside of the fitting time. Since the 
+script considers pixels only in a local window defined by max_line_influence_diameter variable (only the datapoints in 
+that window are active), then lines that are far away from the interesting line can be omitted without any drawbacks.
+
+Also, the best results are gained when locking and limiting the range of as many variables as possible during fitting. 
+This is why max line width and shift are defined in Lines_info.csv and e.g. min_FWHM in user_constants.lua
+It's advisable to test the spectra manually and try out as many different situations throughout the experimental campaign. 
+In some cases a line might be wider than in other cases and in some cases new lines appear and old ones disappear.
+Use as tight bounds as possible while still remaining within the safety margins of the potential line variable change.
+Also, if a line is very wide compared to others (e.g. Stark broadening) then you can use Lorentzian instead of Voigt.
+This way there is one less variable that can mess things up. Also, a new line function VoigtApparatus has been created.
+It's a Voigt profile in which the Gaussian part's width has been locked as the apparatus function. I haven't tested it
+thoroughly but so far, it hasn't produced errors.
+
+The best way to check the appearing lines and their properties has been to sum many spectra of a similar case 
+(e.g. 50-100 laser shots deep in bulk layer where situation doesn't change much). That way the resulting spectrum has 
+smoothed out the noise and every bump is a persisting line. Then subtract the background if applicable (background
+multiplied with nr of summed spectra) and multiply the resulting spectrum with spectral sensitivity pixel-wise. Finally, 
+adjust x-axis. This can be done with the regression function from Pixel_info file (e.g.X = x * 1.5e-7 + 651.2).
+Alternatively you can use the automatic process and take the output corrected spectra from Input_data_corrected folder.
+If you use only_correct_spectra = true in user_constants.lua then automatic processing only outputs these files.
+Fityk's GUI is good for this process (except for multiplying 2 datasets pixel-wise, 
+for that use utility scripts from the repository).
+
+I've had the best results in homing in on the best bounds and variables. That is, determining the best parameters and
+running the script (e.g. in 1 experiment mode). Based on the output, I adjust the parameters and run the script again.
+Sometimes I return to fitting in later stages of data analysis. E.g. after generating depth profiles from Fityk 
+output, I see a misidentified or otherwise strangely behaving line. Then I revisit the line in certain situations and
+find optimal parameters for it. It's easier to fit everything and output everything and then pick out the interesting
+parts of the output than to later return multiple times and do the whole process again.
+
+
+* To load in many datasets from a file execute "@+ < 'C:\path_to_file\HPPW257A_08.asc:1:3..8::'". This loads datasets
+in sequence to the end of the list ("@+") and takes data from the file at the filepath C:\path_to_file\HPPW257A_08.asc. 1 in
+this example selects first column as the x-axis, 3 selects the first dataset as the y-axis from column 3 
+(1st experiment is column 2) and keeps adding ("..") datasets from subsequent columns until column 8. This way it's
+easy to load 500 datasets from a file without programming anything.
+
+
+* The saved sessions seem like the lines are fit too low but that's because of current implementation of the local 
+constant (local continuum). Since there is only one constant function which is moved during fitting then if the last 
+window that is fitted has low continuum then the constant is lower than in previous windows. This results in previous 
+windows missing the local constant visually. The output data (text file) contains values from the time the constant 
+was correct for that window. 
+In the future, I might implement a rectangle function for each window, so that saved sessions look visually right.
+
+
+* It's difficult to estimate the noise level because sometimes stdev of a region gives erroneous result because of
+some lines appearing in the region. On the other hand, local constant is influenced by unfitted lines. Taking the 
+average or median of those gives the best result.
+
+
+* Note that the output file contains uncertainties for every used parameter. However, due to LIBS spectra complexity 
+(multiple overlapping lines, heavy noise, continuum), these can't be trusted.
+
+
+* Sometimes when using GUI it throws "Error: column index out of range: [nr]" error. This is because a dataset was
+selected but some dataset before it was deleted, so now a dataset that is out of bounds is selected. To fix it 
+execute command "use @0". This re-selects dataset 0 (always exists, even if empty) for data transformations.
+
+* Sometimes Fityk throws "MinGW Runtime Assertion" errors (probably after deleting line functions). Clicking "ignore"
+has never resulted any bad things for me.
+
+* Sometimes when adding/deleting line functions and fitting the fit doesn't improve, although there's clearly room for 
+improvement. The log says "Parameters NOT changed" and if investigating more thoroughly (changing verbosity settings) 
+then the WSSR is nan. This is usually because a line has some parameter that is very large (e.g. shape 1e18). 
+Changing it back to normal value allows fitting normally.
+
+* When opening a session in a new computer the session might not load the data because of an error with the working
+directory. This happens when previous session defined the working directory (with "set cwd = ") but the new computer
+doesn't have that directory. The fix is to delete the "set cwd" line from the session file.
