@@ -8,6 +8,8 @@ Fityk homepage: [https://fityk.nieto.pl/](https://fityk.nieto.pl/)
 
 If you want to read the code, I advise to read Fityk's [manual](https://fityk.nieto.pl/fityk-manual.html). In the script I assume you have thoroughly read the manual.
 
+This code is available in Github as [fityk-libs-spectra-script](https://github.com/Tshepajev/fityk-libs-spectra-script).
+
 ## Script features
 
 * The script is plug-and-play, meaning anyone can use it out of the box without installing or configuring additional stuff. 
