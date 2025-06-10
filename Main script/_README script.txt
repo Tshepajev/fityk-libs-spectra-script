@@ -121,7 +121,9 @@ The headers/column names must be: "Wavelength (m),To fit (1/0),Fit priority (1 i
 function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian),Max position shift (m),Max line fwhm (m),Chemical element,
 Ionization number (1 is neutrals),E_k (eV),log(A_ki*g_k/?),line index"
 - Wavelength (m) is the wavelength the line is at. It's best to consider the actual data instead of the wavelengths from databases.
-This column needs to exist with data filled out.
+The line has to be in range of an active datapoint at the time of creation. The range is defined by line function inside Fityk and
+I don't know the range value where the line function value is greater than 0. Therefore, it's best to not fit lines outside of the 
+dataset. This column needs to exist with data filled out.
 - To fit (1/0) must be 1 or 0. This selects whether to use the line or not (don't have to delete rows in input).
 - Fit priority (1 is first) sets the order the lines are created. This is relevant when there are overlapping lines. E.g. a strong
 and weak line overlap. Then it's best to generate the strong line first and weak line second because at line generation the first line
