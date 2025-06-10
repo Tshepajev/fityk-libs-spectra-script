@@ -145,7 +145,10 @@ gain_functions = {
 -- Lines
 -----------------------
 
--- if this is true then lines that are not on active points will be forced as 0-height (disabled).
+-- If this is true then lines that are not on active points will be forced as 0-height (disabled). While it's possible to create 
+-- and fit lines outside of the dataset, doing it too far from an active point will cause a crash. The distance seems to be
+-- related to the line influence range (Fityk's internal parameter, not the one used by me) but I can't quantify it. 
+-- Therefore, it's best not to fit lines outside of the dataset unless you know what you're doing.
 forbid_lines_outside_range = true
 
 
@@ -164,8 +167,10 @@ min_FWHM = apparatus_fn_fwhm -- approx 3 px apparatus fn, this is at shape = 10
 max_line_influence_diameter = 3.5e-9
 
 
--- What percentile of active data (intensities) is considered as the higher bound for constant?
-high_constant_bound_percentile = 50
+-- What percentile of active data (intensities) is considered as the higher bound for constants? This applies currently only for
+-- local constants, since global constant is bound by minimal data value. Having this lower than 50 % is beneficial when there are
+-- un-fitted lines and the constant would be fitted higher than necessary to account for the lines. 
+high_constant_bound_percentile = 30 -- 50 by default
 
 
 -- The upper bound for shape when using Voigt functions. Having it too high causes potential problems
