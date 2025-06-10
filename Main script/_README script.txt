@@ -116,6 +116,9 @@ local default_values = {
 4.c) Create Lines_info*.csv file. That file contains all the necessary info about the lines to be fitted.
 All files corresponding to the wildcard filename are read into memory.
 If there's only one such file, that one is used. Otherwise the one defined in Spectra_info*.csv is used.
+Since output file has only one header then processing spectra with different (number of) lines is an issue in the output.
+Therefore, the program picks the longest list of lines from those files and outputs that. It's strongly advisable to have
+one set of lines for all spectra defined in the Spectra_info file.
 
 The headers/column names must be: "Wavelength (m),To fit (1/0),Fit priority (1 is first),
 function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian),Max position shift (m),Max line fwhm (m),Chemical element,

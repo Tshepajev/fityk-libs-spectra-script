@@ -170,7 +170,7 @@ max_line_influence_diameter = 3.5e-9
 -- What percentile of active data (intensities) is considered as the higher bound for constants? This applies currently only for
 -- local constants, since global constant is bound by minimal data value. Having this lower than 50 % is beneficial when there are
 -- un-fitted lines and the constant would be fitted higher than necessary to account for the lines. 
-high_constant_bound_percentile = 30 -- 50 by default
+high_constant_bound_percentile = 50 -- 50 by default
 
 
 -- The upper bound for shape when using Voigt functions. Having it too high causes potential problems
@@ -181,6 +181,19 @@ max_Voigt_shape = 15
 
 -- Bound for Voight shape
 min_Voigt_shape = 1e-12 -- shape is almost 0 but not quite for FWHM-gwidth conversions
+
+
+-- Whether to write all lines at or near noise level as 0-height in output files? Doing makes it easier to 
+-- distinguish scetchy lines in later data analysis, but this also loses some information. 
+-- If this is true then it applies also for nullify_weak_lines_visual.
+nullify_weak_lines_data = false
+
+-- Whether to write all lines at or near noise level as 0-height for output images and sessions? Doing makes 
+-- the plots and sessions more clean and clear, but this also loses some information.
+nullify_weak_lines_visual = false
+
+-- The line has to be at least this many times stronger than the noise or it will be written as 0-height
+noise_level_check_multiplier = 2
 
 
 -----------------------

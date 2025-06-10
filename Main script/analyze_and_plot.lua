@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 3.10
+-- Script version: 3.11
 -- Author: Jasper Ristkok
 
 --[[
@@ -40,11 +40,10 @@ MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break
 -- Input folders and files in them have to exist beforehand. Fityk really doesn't like special characters anywhere.
 -- Leave / or \ at the end of the string, so that a filename can be concatenated directly.
 -- Windows path can be both with \ or /. However, \ is special in LUA strings, so it needs to be \\.
-work_folder = "D:/Github/fityk-libs-spectra-script/Examples/Wide and complex spectra/"
+work_folder = "D:/Research_analysis/Projects/2024_JET/Lab_comparison_test/Data_processing/Stage_1/"
 info_folder = work_folder .. "Input_info/" -- has to contain user_constants.lua
 ----------------------------------------------------------------------
 -- CHANGE CONSTANTS ABOVE!
-
 
 
 
@@ -94,6 +93,9 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	high_constant_bound_percentile
 	max_Voigt_shape
 	min_Voigt_shape
+	nullify_weak_lines_data
+	nullify_weak_lines_visual
+	noise_level_check_multiplier
 	
 	only_correct_spectra
 	save_sessions
@@ -115,6 +117,7 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 -- Global variables
 -------------------------------------------------------------------------------------------------------------
 -- TODO: noise with input info
+-- TODO: integrate Fityk output organizer script
 
 -- Hack to stop frozen script safely
 stopscript = false
@@ -124,7 +127,7 @@ startpoint = nil
 endpoint = nil
 
 -- Noise amplitudes for current file. Lines smaller than this are written as 0 intensity.
-noise_stdevs = nil
+noise_stdevs = nil -- read from noise_stdevs file in Input_data_corrected/ folder
 noise_stdev = 0
 
 -- Output text file name (compiled automatically from output_data_name and output_data_end)
@@ -958,7 +961,8 @@ function process_data_series(data_filename, experiment_check)
 	
 	-- Collect the files in corrected spectra folder
 	local f_end = string.gsub(file_end, "%.", "%%.") -- replace . with %. for pattern matching
-	local patterns_or = {"^" .. data_filename .. "_(%d+)%-(%d+)" .. f_end .. "$"} -- same input as data correction output
+	local safe_search_filename = get_safe_pattern_string(data_filename) -- escape special characters like - and +
+	local patterns_or = "^" .. safe_search_filename .. "_(%d+)%-(%d+)" .. f_end .. "$" -- same input as data correction output
 	local series_files = match_files(corrected_path, f_end, sort_numerical_corr_filenames_fn, patterns_or)
 	
 	
@@ -1275,8 +1279,9 @@ function process_raw_data_series(data_filename)
 	
 	-- "abc_P10.txt" and "abc_P1_001.txt" need to be different
 	-- and "abc_001.txt" and "abc_d_001.txt" need to be different
-	table.insert(patterns_or, "^" .. data_filename .. f_end .. "$") -- direct match
-	table.insert(patterns_or, "^" .. data_filename .. "_%d+" .. f_end .. "$") -- numeric increment match, assumes Sophi nXt export ("_0001" appended)
+	local safe_search_filename = get_safe_pattern_string(data_filename) -- escape special characters like - and +
+	table.insert(patterns_or, "^" .. safe_search_filename .. f_end .. "$") -- direct match
+	table.insert(patterns_or, "^" .. safe_search_filename .. "_%d+" .. f_end .. "$") -- numeric increment match, assumes Sophi nXt export ("_0001" appended)
 	local series_files = match_files(input_path, f_end, sort_numerical_filenames_fn, patterns_or)
 	
 	local target_nr = spectra_info[data_filename]["Series length"] or 1 -- how many spectra are in the series
@@ -1800,16 +1805,25 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	
 	-- Saves functions' errors into arrays
 	local errors = get_errors(data_filename, minimal_data_value, max_constant_value, max_height_values, angle_errors)
-		
+	
+	-- Generate polyline as local constants in order to visualize the calculations in the sessions file and to read noise more easily.
+	create_polyline_local_constant(polyline_values)
+	
+	-- Write weak lines as 0-height before write_output()
+	if nullify_weak_lines_data then
+		nullify_lines()
+	end
+	
 	-- Writes data into output file
 	write_output(data_filename, spectrum_index, errors)	
 	
+	-- Write weak lines as 0-height after write_output()
+	if nullify_weak_lines_visual and (not nullify_weak_lines_data) then
+		nullify_lines()
+	end
+	
 	-- Save the session in case there's bad fit
 	if save_sessions then
-		-- Generate polyline as local constants in order to visualize the calculations in the sessions file.
-		prepare_session_save(polyline_values)
-		
-		-- Save session
 		F:execute("info state > \'" ..sessions_path..data_filename..separator..spectrum_index.. ".fit\'")
 	end
 	
@@ -1969,11 +1983,23 @@ function fit_functions(data_filename)
 		
 		local line_position = info["Wavelength (m)"]
 		
-		-- Get lines in current line's influence diameter
-		local second_order_multiplier = 1.5 -- multiply influence diameter because influencing line might be influenced by another further away
+		-- Get current line's influence diameter
+		local second_order_multiplier = 1.5 -- multiply influence diameter because influencing line might be influenced by another further away -- TODO: make this constant more transparent to user
 		local beginning = line_position - max_line_influence_diameter * second_order_multiplier
 		local ending = line_position + max_line_influence_diameter * second_order_multiplier
-		local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], line_position, ending) -- use only the current line and lines to the right because others are already fitted and locked
+		if forbid_lines_outside_range then
+			beginning = clip(beginning, cut_start, cut_end)
+			ending = clip(ending, cut_start, cut_end)
+		end
+		
+		-- Prevent crash with line being so far that it's out of range and there's even no active datapoints
+		local minimal_data_value_temp, max_constant_value_temp, constant_parameters_temp, poly_tbl, influenced_line_indices -- define before goto to prevent errors
+		if (ending < cut_start) or (beginning > cut_end) then -- TODO: still crashes when creating line outside of dataset
+			--goto skip_dummy_fit 
+		end
+		
+		-- Get lines in current line's influence diameter
+		influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], line_position, ending) -- use only the current line and lines to the right because others are already fitted and locked
 		
 		
 		-- Activate dataset points in the diameter
@@ -1984,7 +2010,6 @@ function fit_functions(data_filename)
 		activate_local_lines(influenced_line_indices, lines_info_filename, minimal_data_value, variable_types, max_height_values)
 		
 		-- Skip loop if it's a dummy
-		local minimal_data_value_temp, max_constant_value_temp, constant_parameters_temp, poly_tbl -- define before goto to prevent errors
 		if not variable_types[line_index] then -- is dummy function
 			goto skip_dummy_fit
 		end
@@ -2018,7 +2043,7 @@ function fit_functions(data_filename)
 		end)
 		
 		-- Check the current line area. If not according to requirements (stronger than noise) the line height is written as 0.
-		remove_invalid_line(line_index, variable_types, noise_stdev)
+		--remove_invalid_line(line_index, variable_types, noise_stdev)
 		
 		-- Calculate value and error
 		constant_value_temp = F:calculate_expr("%bg_local.a")
@@ -2058,15 +2083,19 @@ function get_fn_name(lines_info_filename, line_index)
 	db("get_fn_name",4)
 	local sig_numbers = 6
 	
-	-- Get function name
-	local function_name = lines_info[lines_info_filename][line_index]["Chemical element"]
-	local ionization = ""
-	if function_name ~= "_" then -- line is identified
-		ionization = lines_info[lines_info_filename][line_index]["Ionization number (1 is neutrals)"]
-	end
-	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
-	function_name = function_name..ionization.. "_" .. decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
+	-- TODO: delete Ionization and just rename element to identificator
 	
+	-- Get function name
+	local identifier = lines_info[lines_info_filename][line_index]["Chemical element"]
+	--local ionization = ""
+	--if identifier ~= "_" then -- line is identified
+		--ionization = lines_info[lines_info_filename][line_index]["Ionization number (1 is neutrals)"]
+	--end
+	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
+	--local function_name = identifier..ionization.. "_" .. decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
+	
+	-- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
+	local function_name = identifier.. "_" .. decimalToInteger(line_position, sig_numbers) 
 	
 	-- Check for duplicate locations. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
 	local similar_lines_nr = 0
@@ -2075,15 +2104,34 @@ function get_fn_name(lines_info_filename, line_index)
 		
 		if i >= line_index then break -- only read up to current line_index
 		else 
-			if decimalToInteger(line_position, sig_numbers) == decimalToInteger(pos, sig_numbers) then
+			if (identifier == info["Chemical element"]) and 
+				(decimalToInteger(line_position, sig_numbers) == decimalToInteger(pos, sig_numbers)) then
 				similar_lines_nr = similar_lines_nr + 1
 			end
 		end
 	end
 	similar_lines_nr = (similar_lines_nr > 0) and ("_" ..similar_lines_nr) or ""
-	function_name = function_name.. similar_lines_nr
+	local output_name = function_name.. similar_lines_nr
 	
-	return function_name
+	--[[
+	-- Check for duplicate names. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
+	local existing_line = function_name and F:get_function(function_name)
+	if existing_line then
+		local count = 1
+		local new_name = function_name .. "_" .. tostring(count)
+		
+		-- Iterate indices until no line with that one exists
+		while existing_line do
+			output_name = new_name
+			new_name = function_name .. "_" .. tostring(count)
+			
+			count = count + 1
+			existing_line = function_name and F:get_function(new_name)
+		end
+	end
+	--]]
+	
+	return output_name
 end
 
 -- Unlock existing lines or create a new line in dataset
@@ -2377,7 +2425,10 @@ function guess_parameter_constructor(lines_info_filename, line_index, minimal_da
 		height = height - minimal_data_value -- get the max height - minimal_data_value around line location and set that as the guess value
 	end
 	
+	-- Get noise level. Since local constant hasn't been fitted yet then only global noise level can be used
 	--local noise = F:calculate_expr("centile("..tostring(height_percentile_of_existing_lines)..", y if a)") - minimal_data_value -- some percentile of all active data - min value of active data
+	local noise_level = noise_stdev
+	
 	--if height <= noise then -- line doesn't exist 
 	if height <= (noise_stdev * 0.5) then -- line doesn't exist, might be wide, so lower than noise_stdev is ok
 		return -- instead create a dummy function
@@ -2532,9 +2583,10 @@ function create_dummy_function(lines_info_filename, line_index)
 	end
 end
 
+--[[
 -- If the line is too small then it is written as 0-height.
 function remove_invalid_line(line_index, variable_types, noise_stdev)
-	db("remove_invalid_lines", 3)
+	db("remove_invalid_line", 3)
 	
 	local breadth_multiplier = math.pi -- don't remember where it came
 	--local rectangle_width = gwidth / 1.2 * breadth_multiplier -- to hwhm and then get the rectangle width
@@ -2592,6 +2644,55 @@ function remove_invalid_lines(lines_info_filename, minimal_data_value)
 		end
 	end
 end
+--]]
+
+-- Write weak lines as 0-height. This function is meant to be run after finishing with line fitting
+function nullify_lines()
+	db("nullify_lines", 2)
+	
+	-- Iterate over lines
+	local functions = F:all_functions()
+	for idx = 0, #functions - 1 do
+		local fn = functions[idx]
+		
+		-- Check if the function has height and center parameter 
+		local height, center
+		local status, err = pcall(function() 
+			height = fn:get_param_value("height")
+			center = fn:get_param_value("center") 
+		end)
+		
+		if height and center then
+			local noise_level = get_noise_estimate(center)
+			
+			-- Line is too weak and is influenced by noise too much
+			if height < (noise_level * noise_level_check_multiplier) then
+			
+				-- Write line height as 0 and lock all variables
+				local height_var = "$" .. fn:var_name("height")
+				F:execute(height_var .. " = 0")
+				lock_parameters(fn)
+			end
+		end
+	end
+end
+
+-- Estimate the local noise level as the average of global noise and polyline local height
+function get_noise_estimate(location)
+	local noise_level_constant = get_constant_noise_estimate(location)
+	
+	local noise_level = (noise_level_constant + noise_stdev) / 2
+	return noise_level
+end
+
+-- Get noise estimate as the local polyline (local continuum is actually global constant + local constant)
+function get_constant_noise_estimate(location)
+	db("get_constant_noise_estimate", 2)
+	local bg_local_fn = F:get_function("bg_local")
+	local local_constant = bg_local_fn:value_at(location)
+	
+	return local_constant
+end
 
 -- unlock the parameters of the function
 function unlock_parameters(fn_var_types)
@@ -2623,19 +2724,26 @@ function lock_parameters(fn, line_index)
 	local param_name = fn:get_param(param_nr)
 	while param_name ~= "" do
 		
-		-- One shared parameter for those values
-		if (param_name == "hwhm") or (param_name == "gwidth") or (param_name == "fwhm") then
-			param_name = "width"
+		-- Line defined, get angle variables and lock these instead of direct variables
+		if line_index then
+			-- One shared parameter for those values
+			if (param_name == "hwhm") or (param_name == "gwidth") or (param_name == "fwhm") then
+				param_name = "width"
+			end
+			
+			-- Get angle variable name
+			local variable_name = param_name.. "_variable_" ..line_index
+			if param_name == "a" then
+				variable_name = "constant_variable"
+			end
+			
+			-- Lock the parameter with its value
+			F:execute("$" ..variable_name.. " = {$" ..variable_name.. "}")
+		else -- brute-lock
+			-- Lock the parameter with its value by creating a new variable
+			local direct_variable = "$" .. fn:var_name(param_name)
+			F:execute(direct_variable .. " = {" ..direct_variable.. "}")
 		end
-		
-		-- Get angle variable name
-		local variable_name = param_name.. "_variable_" ..line_index
-		if param_name == "a" then
-			variable_name = "constant_variable"
-		end
-		
-		-- Lock the parameter with its value
-		F:execute("$" ..variable_name.. " = {$" ..variable_name.. "}")
 		
 		param_nr = param_nr + 1
 		param_name = fn:get_param(param_nr)
@@ -3184,7 +3292,7 @@ end
 -- Generate a polyline to simulate the fitted local constants. 
 -- This manipulation is done here instead of adding rectangle functions
 -- during data fitting because that could increase fitting time.
-function prepare_session_save(polyline_values)
+function create_polyline_local_constant(polyline_values)
 	
 	-- Add a polyline (local constants) to raise the line functions back to original height. Alternative
 	-- is to use Rectangle functions.
@@ -3296,6 +3404,8 @@ end
 
 -- Clip variable between two values
 function clip(var, low, high)
+	if not low then low = -infinity end
+	if not high then high = infinity end
 	if low and (var < low) then var = low end
 	if high and (var > high) then var = high end
 	return var
@@ -3331,6 +3441,19 @@ function split(inputstr, sep)
 	end
 	
 	return t
+end
+
+
+-- Prepare ordinary string to be used in regex patterns. Put a % in front of special characters/magic characters like + and -
+function get_safe_pattern_string(str)
+	str = string.gsub(str, "%%", "%%%%") -- put % in front of %
+	
+	-- Go over other special characters
+	local normal_special_chars = {"(", ")", ".", "+", "-", "*", "?", "[", "^", "$"} -- https://www.lua.org/pil/20.2.html
+	for idx, char in ipairs(normal_special_chars) do
+		str = string.gsub(str, "%" .. char, "%%" .. char) -- put % in front
+	end
+	return str
 end
 
 -- Search a folder for files that match the provided pattern, if no pattern then return all files
