@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 3.11
+-- Script version: 3.11.1
 -- Author: Jasper Ristkok
 
 --[[
@@ -40,7 +40,8 @@ MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break
 -- Input folders and files in them have to exist beforehand. Fityk really doesn't like special characters anywhere.
 -- Leave / or \ at the end of the string, so that a filename can be concatenated directly.
 -- Windows path can be both with \ or /. However, \ is special in LUA strings, so it needs to be \\.
-work_folder = "D:/Research_analysis/Projects/2024_JET/Lab_comparison_test/Data_processing/Stage_1/"
+--work_folder = "D:/Research_analysis/Projects/2024_JET/Lab_comparison_test/Data_processing/Stage_1/"
+work_folder = "E:/Research_analysis/2024.03 VTT JET/Test/"
 info_folder = work_folder .. "Input_info/" -- has to contain user_constants.lua
 ----------------------------------------------------------------------
 -- CHANGE CONSTANTS ABOVE!
@@ -1002,17 +1003,26 @@ function process_data_series(data_filename, experiment_check)
 	
 	-- Read noise amplitude estimates from saved corrected file
 	noise_stdevs = load_raw_csv(corrected_path..noise_stdevs_file..file_end)
-	for i,row_table in ipairs(noise_stdevs) do
-		if row_table[1] == data_filename then -- it's the line of current spectra file
-			noise_stdevs = row_table
-			break
+	
+	-- Check if file existed
+	if noise_stdevs then
+		for i,row_table in ipairs(noise_stdevs) do
+			if row_table[1] == data_filename then -- it's the line of current spectra file
+				noise_stdevs = row_table
+				break
+			end
 		end
+		
+		-- Convert string to number 
+		for i,stdev in ipairs(noise_stdevs) do
+			noise_stdevs[i] = tonumber(stdev)
+		end
+	
+	else
+		printe("process_data_series() | noise_stdevs is nil. Did you manually copy " ..corrected_path.. " folder but not " ..noise_stdevs_file.. ".txt?\nWriting stdevs as 0.")
 	end
 	
-	-- Convert string to number 
-	for i,stdev in ipairs(noise_stdevs) do
-		noise_stdevs[i] = tonumber(stdev)
-	end
+	
 	
 	
 	-------------------------------
@@ -1254,8 +1264,6 @@ end
 function process_raw_data_series(data_filename)
 	db("process_raw_data_series", 2)
 	
-	local noise_stdevs -- save noise estimates separately because sensitivity correction might lose that info
-	
 	-- Get files with data_filename beginning
 	--[[
 	local series_files = {}
@@ -1393,7 +1401,7 @@ function process_raw_data_series(data_filename)
 		end
 		
 		-- Do file- and pixel-wise correction
-		local noise_stdevs
+		local noise_stdevs -- save noise estimates separately because sensitivity correction might lose that info
 		data_table, noise_stdevs = data_correction(data_table, data_filename)
 		series_noise_stdevs = tableConcat(series_noise_stdevs, noise_stdevs) -- concatenate the tables
 		
@@ -1786,7 +1794,7 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	if stopscript then return end -- stop the script
 	
 	-- Get the noise amplitude estimate for current experiment
-	noise_stdev = noise_stdevs[spectrum_index + 1] or 0 -- 1st value in noise_stdevs is filename
+	noise_stdev = noise_stdevs and noise_stdevs[spectrum_index + 1] or 0 -- 1st value in noise_stdevs is filename, if nil then 0
 	
 	if stop_before_lines then
 		print("Stopping the script before line fitting")
@@ -1824,6 +1832,10 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	
 	-- Save the session in case there's bad fit
 	if save_sessions then
+		-- Generate polyline as local constants in order to visualize the calculations in the sessions file.
+		--prepare_session_save(polyline_values)
+		
+		-- Save session
 		F:execute("info state > \'" ..sessions_path..data_filename..separator..spectrum_index.. ".fit\'")
 	end
 	
