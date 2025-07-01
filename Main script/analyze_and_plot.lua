@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 3.11.1
+-- Script version: 3.12
 -- Author: Jasper Ristkok
 
 --[[
@@ -85,11 +85,12 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	moving_average_experiment_radius
 	moving_average_pixels_radius
 	process_nr_spectra
-	gain_functions
+	gain_functions -- table of functions
 	
 	forbid_lines_outside_range
 	apparatus_fn_fwhm
-	min_FWHM
+	apparatus_function_fwhm -- function
+	min_FWHM_function -- function
 	max_line_influence_diameter
 	high_constant_bound_percentile
 	max_Voigt_shape
@@ -211,7 +212,7 @@ function initialize_fityk()
 	F:execute("set lm_max_lambda = 1e+020")
 	
 	-- VoigtFWHM declaration
-	pcall(function() -- Try to undefine existing function definition
+	pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine VoigtFWHM")
 	end)
 	-- Create Voigt profile which takes FWHM as its argument, Fityk can't handle non-continuous functions due to ternary operator ("?") not supported.
@@ -222,19 +223,18 @@ function initialize_fityk()
 	
 	
 	-- VoigtApparatus declaration
-	pcall(function() -- Try to undefine existing function definition
+	pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine VoigtApparatus")
 	end)
 	-- Create Voigt profile which locks the Gaussian part width as the apparatus function.
 	-- gwidth = (gauss_fwhm / 2)
 	-- w_G = 2 * sqrt(ln(2)) * gwidth
-	local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
-	F:execute("define VoigtApparatus(height, center, shape = 0.3[0:18]) = Voigt(height, center, " ..tostring(gwidth).. ", shape)")
-	
+	--local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
+	F:execute("define VoigtApparatus(height, center, gwidth, shape = 0.3[0:18]) = Voigt(height, center, gwidth, shape)") -- TODO: use Voigt to get GFWHM and LFWHM automatically?
 	
 	-- Rectangle function declaration. The start and end parameters need to be locked, otherwise Fityk throws 
 	-- "Error: Trying to reverse singular matrix. Column 1 is zeroed."
-	pcall(function() -- Try to undefine existing function definition
+	pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine Rectangle")
 	end)
 	F:execute("define Rectangle(height=avgy, start, end) = Sigmoid(0, height, start, 1e-300) + Sigmoid(0, -height, end, 1e-300)")
@@ -2466,6 +2466,9 @@ function guess_parameter_constructor(lines_info_filename, line_index, minimal_da
 	-- hwhm, gwidth or FWHM angle variable (depending on fn type), starts from 3pi/2 so that sin is minimal
 	F:execute("$width_variable_"..tostring(line_index).." = ~4.712")
 	
+	-- Get the min FWHM bound for the wavelength
+	local min_FWHM = min_FWHM_function(line_position)
+	
 	-- shape and gwidth or hwhm or fwhm or just shape depending on Voigt type
 	if (function_type == "Voigt") or (function_type == "VoigtFWHM") or (function_type == "VoigtApparatus") then -- Voigt or Voigt defined by fwhm or Voigt defined by apparatus fn
 		-- shape 
@@ -2474,8 +2477,12 @@ function guess_parameter_constructor(lines_info_filename, line_index, minimal_da
 		
 		-- Limit shape for VoigtApparatus (more freedom than other Voigts)
 		if (function_type == "VoigtApparatus") then
+			local apparatus_fn_fwhm = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
 			local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
 			local max_VoigtApp_shape = get_shape(max_FWHM, gwidth)
+			
+			-- Lock gwidth, so it would result in GaussianFWHM of apparatus function
+			parameters = parameters..", gwidth = "..tostring(gwidth)
 			
 			-- equation: shape = max_VoigtApp_shape / 2 + max_VoigtApp_shape / 2 * sin(~angle) (binds it from 0 to 10) (1 is equal parts of Gaussian and Lorentzian and 0 should be pure Gaussian but isn't quite)
 			parameters = parameters..", shape = "..tostring(max_VoigtApp_shape / 2).." + "..tostring(max_VoigtApp_shape / 2).." * sin($shape_variable_"..tostring(line_index)..")"
@@ -2589,7 +2596,7 @@ function create_dummy_function(lines_info_filename, line_index)
 	elseif function_type == "VoigtFWHM" then -- FWHM defined Voigt
 		F:execute("guess %" .. function_name .. " = VoigtFWHM(center = "..tostring(line_position)..", height = 0, fwhm = 1, shape = 1)")
 	elseif function_type == "VoigtApparatus" then -- Apparatus fn defined Voigt
-		F:execute("guess %" .. function_name .. " = VoigtApparatus(center = "..tostring(line_position)..", height = 0, shape = 1)")
+		F:execute("guess %" .. function_name .. " = VoigtApparatus(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
 	else -- Gaussian and Lorentzian have same variables
 		F:execute("guess %" .. function_name .. " = Gaussian(center = "..tostring(line_position)..", height = 0, hwhm = 1)")
 	end
@@ -2599,6 +2606,9 @@ end
 -- If the line is too small then it is written as 0-height.
 function remove_invalid_line(line_index, variable_types, noise_stdev)
 	db("remove_invalid_line", 3)
+	
+	-- Get the min FWHM bound for the wavelength
+	local min_FWHM = min_FWHM_function(line_position)
 	
 	local breadth_multiplier = math.pi -- don't remember where it came
 	--local rectangle_width = gwidth / 1.2 * breadth_multiplier -- to hwhm and then get the rectangle width
@@ -2628,6 +2638,9 @@ end
 -- If a line is too small then it is written as 0-height.
 function remove_invalid_lines(lines_info_filename, minimal_data_value)
 	db("remove_invalid_lines", 3)
+	
+	-- Get the min FWHM bound for the wavelength
+	local min_FWHM = min_FWHM_function(line_position)
 	
 	local functions = F:get_components(0)
 	--local noise = math.abs(F:calculate_expr("centile("..tostring(height_percentile_of_existing_lines)..", y if a)") - minimal_data_value) -- some percentile of all active data - min value of active data
@@ -2848,6 +2861,9 @@ function get_errors(data_filename, minimal_data_value, max_constant_value, max_h
 			errors.center_errors[line_index] = math.abs(max_position_shift * math.cos(F:calculate_expr("$center_variable_"..line_index)) * center_angle_error)
 		end
 		
+		-- Get the min FWHM bound for the wavelength
+		local line_position = functions[line_index]:get_param_value("center")
+		local min_FWHM = min_FWHM_function(line_position)
 		
 		local function_type = lines_info[lines_info_filename][line_index]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"]
 		local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"] or infinity
@@ -2863,6 +2879,7 @@ function get_errors(data_filename, minimal_data_value, max_constant_value, max_h
 			
 			-- VoigtApparatus
 			if (function_type == "VoigtApparatus") then
+				local apparatus_fn_fwhm = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
 				local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
 				local max_VoigtApp_shape = get_shape(max_FWHM, gwidth)
 				
@@ -3010,6 +3027,7 @@ function write_output(data_filename, spectrum_index, errors)
 			gwidth = math.abs(functions[line_index]:get_param_value("fwhm")) -- TODO: separate this into fwhm output field
 			shape = math.abs(functions[line_index]:get_param_value("shape"))
 		elseif function_type == "VoigtApparatus" then -- VoigtApparatus
+			gwidth = math.abs(functions[line_index]:get_param_value("gwidth"))
 			shape = math.abs(functions[line_index]:get_param_value("shape"))
 		else -- Gaussian or Lorentzian
 			hwhm = math.abs(functions[line_index]:get_param_value("hwhm"))
@@ -3216,7 +3234,7 @@ function get_FWHA(FWHA_spectrum_index, function_type, height, center, hwhm, gwid
 		F:execute("%FWHA = VoigtFWHM(center = "..center..", height = "..height..", fwhm = "..fwhm..", shape = "..shape..")")
 	
 	elseif function_type == "VoigtApparatus" then
-		F:execute("%FWHA = VoigtApparatus(center = "..center..", height = "..height..", shape = "..shape..")")
+		F:execute("%FWHA = VoigtApparatus(center = "..center..", height = "..height..", gwidth = "..gwidth..", shape = "..shape..")")
 	
 	elseif function_type == "Gaussian" then -- Gaussian
 		F:execute("%FWHA = Gaussian(center = "..center..", height = "..height..", hwhm = "..hwhm..")")

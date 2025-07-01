@@ -155,11 +155,26 @@ forbid_lines_outside_range = true
 -- The apparatus function of the system when using VoigtApparatus curve. This is the FWHM of Gaussian (GaussianFWHM of apparatus fn)
 apparatus_fn_fwhm = 0.044e-9
 
+-- The function format is useful if e.g. apparatus function changes throughout the spectrum. Currently used only by min_FWHM_function().
+-- If it's constant then just return a constant value or variable instead of the equation.
+apparatus_function_fwhm = function(wavelength)
+	-- Write your function here!
+	return 114286 * wavelength + 0.0014
+end
 
 -- What is the minimal line gwidth? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
---minimal_gwidth = 5e-12 -- approx 5 px pparatus fn, this is at shape = 10 
+--minimal_gwidth = 5e-12 -- approx 5 px pparatus fn, this is at shape = 10
+ 
 -- What is the minimal line width at half maximum? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
-min_FWHM = apparatus_fn_fwhm -- approx 3 px apparatus fn, this is at shape = 10 
+--min_FWHM = apparatus_fn_fwhm -- approx 3 px apparatus fn, this is at shape = 10 
+
+-- What is the minimal line width at half maximum? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
+-- The function format is useful if min_FWHM (e.g. apparatus function) changes throughout the spectrum.
+-- If it's constant then just return a constant value or variable instead of the equation.
+min_FWHM_function = function(wavelength)
+	-- Write your function here!
+	return apparatus_function_fwhm(wavelength)
+end
 
 
 -- Estimate for how wide a line can be to still influence the fitting of other points considerably. 
