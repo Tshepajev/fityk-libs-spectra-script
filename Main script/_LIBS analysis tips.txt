@@ -4,9 +4,10 @@ This file describes how to use the Fityk and the script analyze_and_plot.lua to 
 
 
 * I tend to use Excel for creating the files in info_folder. After creating a sheet with the necessary info I export 
-it into csv. Sometimes Excel adds non-unicode characters like no break space. Then these must be removed. If the sheet
-contains more fields as equations that result in blank fields then the output ASCII will have empty comma lines at the
-end. The script reads in the files faster if these comma lines are deleted beforehand (if there's tens of thousands
+it into csv. Sometimes Excel adds non-unicode characters like no break space. Then these must be removed. Also, Ecxel
+exports the file like the cells are formatted. Make sure you have enough decimals (e.g. 5-6 for wavelengths). If the 
+sheet contains more fields as equations that result in blank fields then the output ASCII will have empty comma lines
+at the end. The script reads in the files faster if these comma lines are deleted beforehand (if there's tens of thousands
 of these).
 
 * I have written code that checks the values of input info. If there's an error in a value or it's blank then the 

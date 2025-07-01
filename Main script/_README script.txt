@@ -167,6 +167,8 @@ local default_values = {
 
 5) Make sure input is UTF-8! Lua can't handle unicode characters like no break space that e.g. excel sometimes outputs.
 This can be done by ctrl+f in e.g. Notepad++ and removing these characters from Excel output csv file.
+Another issue with Excel has been that it outputs certain number format like is displayed in the cells. 
+E.g. having 4 decimals accuracy and scientific notation is not enough for wavelengths that would need 5-6 decimals.
 
 
 
