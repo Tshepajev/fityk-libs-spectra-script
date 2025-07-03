@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 3.12
+-- Script version: 3.13 pre-4.0
 -- Author: Jasper Ristkok
 
 --[[
@@ -70,6 +70,7 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	input_data_separator
 	csv_string_char
 	noise_stdevs_file
+	is_complex_filename
 	
 	transform
 	function transform_line_positions(lines_info_filename)
@@ -120,6 +121,11 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 -------------------------------------------------------------------------------------------------------------
 -- TODO: noise with input info
 -- TODO: integrate Fityk output organizer script
+-- TODO: integrate linked variables
+-- TODO: Write readmes for filenames
+-- TODO: Write readmes for linked variables
+-- TODO: Update changelog
+-- TODO: Create new examples
 
 -- Hack to stop frozen script safely
 stopscript = false
@@ -141,14 +147,28 @@ last_error_msg = nil
 -- Initialize table for holding input_info folder data
 spectra_info, pixel_info, lines_info = {},{},{}
 
+-- The format in which the filename is constructed
+filename_identifier_start = nil -- used when accessing Input_data files
+filename_identifier_start_clean = nil -- used by default, except for when accessing Input_data files
+filename_identifier_end = nil
+filename_index_digits_nr = nil
+
+-- Table that holds the variable names the user defined in Lines_info*.csv as keys and the actual Fityk variable names as values
+user_defined_variables = {}
+
 
 -------------------------------------------------------------------------------------------------------------
 -- MAIN PROGRAM
 -------------------------------------------------------------------------------------------------------------
 -- Loads data from files into memory, finds defined peaks, fits them, exports the data and plots the graphs.
 function main_program()
+	if not file_exists(info_folder.."user_constants.lua") then
+		printe("main_program() | user_constants.lua is not in info folder. info_folder: "..info_folder)
+		return
+	end
+	
 	-- Read in user constants from separate script (separate for reproducibility of analysis)
-	F:execute("exec \'" .. info_folder .. "user_constants.lua\'")
+	F:execute("exec \'"..info_folder.."user_constants.lua\'")
 	
 	-- Create stopscript in info_folder if it doesn't exist, empty it if it does.
 	initialize_stopscript()
@@ -184,7 +204,7 @@ end
 -- Function declarations in the order they are called (Utility functions are at the end)
 -------------------------------------------------------------------------------------------------------------
 ----------------------------------------------------------------------
--- Initialization phase
+-- Initialization and info loading phase
 ----------------------------------------------------------------------
 -- Create stopscript in info_folder if it doesn't exist, empty it if it does.
 function initialize_stopscript()
@@ -349,7 +369,8 @@ function load_pixel_info(filename)
 	local pixel_index = 1
 	for line in io.lines(info_folder .. filename) do
 		
-		local non_empty = string.match(line, "([^" .. separator .. "]+)") -- ignore separators
+		local safe_separ = get_safe_pattern_string(separator) -- defuse special characters in identifier
+		local non_empty = string.match(line, "([^" .. safe_separ .. "]+)") -- ignore separators
 		if (not line) or (line == "") or (not non_empty) then -- empty line or only commas
 			printe("load_pixel_info() | Empty line " .. tostring(pixel_index))
 			goto load_pixel_info_continue -- skip line in file
@@ -493,7 +514,7 @@ function validate_pixel_info()
 end
 
 -- Read data from Pixel_info*.csv file into LUA lines_info table
--- Columns: To fit (1/0),Fit priority (1 is first),Wavelength (m),function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian),Max position shift (m),Max line gwidth/hwhm (m), Chemical element,Ionization number (1 is neutrals),E_k (eV),log(A_ki*g_k/?),line index,
+-- Columns: To fit (1/0),Fit priority (1 is first),Wavelength (m),function to fit,Max position shift (m),Max line gwidth/hwhm (m), Identificator,E_k (eV),log(A_ki*g_k/?),line index,
 -- You don't need all the columns filled but the structure must remain. You need to have at least the 3 first columns filled.
 function load_lines_info(filename)
 	db("load_lines_info",4)
@@ -504,7 +525,8 @@ function load_lines_info(filename)
 	
 	for line in io.lines(info_folder .. filename) do -- skips line if no break space is in the line
 		
-		local non_empty = string.match(line, "([^" .. separator .. "]+)") -- ignore separators
+		local safe_separ = get_safe_pattern_string(separator) -- defuse special characters in identifier
+		local non_empty = string.match(line, "([^" .. safe_separ .. "]+)") -- ignore separators
 		if (not line) or (line == "") or (not non_empty) then -- empty line or only commas
 			goto load_lines_info_continue 
 		end
@@ -554,7 +576,10 @@ function load_lines_info(filename)
 	table.sort(lines_info[filename], compare_wp)
 	
 	-- Write missing values as default values
-	--correct_lines_info()	
+	--correct_lines_info()
+	
+	-- Check each line for the dependent variables equation and save the data into user_defined_variables
+	validate_linked_variables()
 	
 	-- Shifts all line positions according to user defined equation
 	if transform then 
@@ -569,16 +594,14 @@ function check_line_info_value(title, value)
 		["To fit (1/0)"] = 1, -- important
 		["Fit priority (1 is first)"] = 1,
 		["Wavelength (m)"] = nil, -- important
-		["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"] = "Voigt",
+		["function to fit"] = "Voigt",
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity, -- almost infinity
-		["Chemical element"] = "_",
-		["Ionization number (1 is neutrals)"] = 1,
-		["Link parameters"] = nil
+		["Identificator"] = "_",
+		["Linked variables"] = nil
 	}
 	
-	-- TODO: remove number option from function to fit type, enforce string
-	if (title == "function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)") then -- function type can be string
+	if (title == "function to fit") then -- function type can be string
 		if tonumber(value) then -- it's a number
 			if (value == "0") then value = "Voigt"
 			elseif (value == "1") then value = "Gaussian"
@@ -588,8 +611,10 @@ function check_line_info_value(title, value)
 				value = nil 
 			end
 		end
-	elseif (title == "Chemical element") or (title == "Ionization number (1 is neutrals)") then -- those can be string but must be lowercase and only contain digits, letters and _
+	elseif (title == "Identificator") then -- this can be string but must be lowercase and only contain digits, letters and _
 		value = string.gsub(value, "%s+", "") -- strip whitespaces
+	elseif (title == "Linked variables")  then
+		-- do nothing
 	else -- convert to number
 		value = tonumber(value) -- number or nil
 	end
@@ -614,11 +639,10 @@ function validate_lines_info()
 		["To fit (1/0)"] = 1,
 		["Fit priority (1 is first)"] = 1,
 		["Wavelength (m)"] = nil,
-		["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"] = "Voigt",
+		["function to fit"] = "Voigt",
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity,
-		["Chemical element"] = "_",
-		["Ionization number (1 is neutrals)"] = 1,
+		["Identificator"] = "_",
 		["Link parameters"] = nil
 	}
 	
@@ -658,6 +682,12 @@ end
 --]]
 
 
+-- Check each line for the dependent variables equation and save the data into user_defined_variables
+function validate_linked_variables()
+	
+end
+
+
 
 -- Read data from Spectra_info*.csv file into LUA spectra_info table
 -- Columns: Filename,Pixel correction filename,Lines filename,Background filename, Nr. of spectra accumulations,Camera pre amplification,Camera gain,Camera gate width (s),Series length,Additional multiplier,Additional additive
@@ -668,7 +698,8 @@ function load_spectra_info(filename,pixel_files,lines_files)
 	local titles
 	for line in io.lines(info_folder .. filename) do
 		
-		local non_empty = string.match(line, "([^" .. separator .. "]+)") -- ignore separators
+		local safe_separ = get_safe_pattern_string(separator) -- defuse special characters in identifier
+		local non_empty = string.match(line, "([^" .. safe_separ .. "]+)") -- ignore separators
 		if (not line) or (line == "") or (not non_empty) then goto load_spectra_info_continue end  -- empty line or only commas
 		
 		local values = split(line,separator) -- table of csv values
@@ -681,6 +712,9 @@ function load_spectra_info(filename,pixel_files,lines_files)
 				printe("load_spectra_info() | No filename")
 				goto load_spectra_info_continue 
 			end
+			
+			-- Remove the extension (e.g. ".txt")
+			data_filename = remove_filename_extension(data_filename)
 			
 			spectra_info[data_filename] = spectra_info[data_filename] or {} -- initialize table for that filename
 			
@@ -744,12 +778,15 @@ function check_info_value(title, value)
 	elseif (title == "Lines filename") then
 		value = get_sole_filename(value, lines_info) -- nil or existing filename
 	elseif (title == "Background filename") then
+		if value == "" then 
+			value = nil
+		
 		-- Add file extension if it doesn't exist
-		if value and (value ~= "Background_info") then
+		elseif value and (value ~= "Background_info") then
 			local extens_pattern = "^.+(%.[%a%d]-)$" -- any characters (1 or more), [extracted] ., [extracted] alphanumeric characters (1 or more)
 			local file_ext = string.match(value, extens_pattern)
 			local has_file_end = (file_ext ~= nil)
-			if not has_file_end then value = value .. file_end end -- remove file end
+			if not has_file_end then value = value .. file_end end -- add file end
 		end
 	else -- normal value
 		value = tonumber(value) -- convert string to number
@@ -859,6 +896,10 @@ end
 --]]
 
 
+-----------------------------------
+-- Program initialization
+-----------------------------------
+
 -- resets Fityk and asks user for run parameters
 function initialize_program()
 	db("initialize_program",0)
@@ -868,7 +909,7 @@ function initialize_program()
 	
 	local data_filename, experiment_check
 	if answer2 == 'y' then 
-		data_filename = F:input("Series (file)name: ")
+		data_filename = F:input("Series 1st spectrum filename (same as in Spectra_info*.csv): ")
 		
 		-- Spectra info is missing for provided filename
 		if not spectra_info[data_filename] then 
@@ -907,6 +948,8 @@ function initialize_program()
 		continue_answer = false
 	end
 	
+	-- Remove the extension (e.g. ".txt")
+	data_filename = remove_filename_extension(data_filename)
 	
 	return data_filename, experiment_check, continue_answer
 end
@@ -916,6 +959,9 @@ end
 -- Processing phase 1 - Sensitivity correction
 ----------------------------------------------------------------------
 
+----------------------------
+-- Extracting file identifier
+----------------------------
 
 -- Iterates over files, fits lines and outputs data
 function process_data(file_check, experiment_check)
@@ -932,15 +978,21 @@ function process_data(file_check, experiment_check)
 	-- TODO: no data_filename
 	init_output(data_filename) -- write column headings
 	
+	-- Copy user_constants.lua to the output (increment index if already exists)
+	save_user_constants()
+	
 	-- Checks whether to view 1 file
-	if file_check then 
+	if file_check then
 		process_data_series(file_check, experiment_check)
 	else
 		
 		-- Sort series filenames in ascending order for consistent output
+		-- Some experimental campaigns have many spectra in one file but some have each in separate file.
+		-- Either way the list needs sorting because it's uncertain how the user feeds the info in.
 		local series_filenames = {}
 		for k,v in pairs(spectra_info) do table.insert(series_filenames, k) end
-		table.sort(series_filenames, sort_numerical_filenames_fn)
+		table.sort(series_filenames, sort_spectra_info_filenames)
+		--printTable(series_filenames)
 		
 		-- Iterate over all data files
 		for i,data_filename in ipairs(series_filenames) do
@@ -951,34 +1003,48 @@ function process_data(file_check, experiment_check)
 	end
 end
 
+
+----------------------------
+-- Processing series
+----------------------------
+
 -- Processes one kinetic series/one crater. If nr of shots is larger than spectra in file then script searches other files with same filename start
 -- Assumes that all spectra in series have same x-values
 function process_data_series(data_filename, experiment_check)
 	db("process_data_series", 1)
 	
+	-- Get the filename format (into global variables) for the current series in order to extract index from these files
+	extract_file_identifier(data_filename)
+	local series_id = compile_corrected_series_id()
+	
+	-- data_filename (with index) is the key for spectra_info table, but series_id (without index) is used when outputting/printing stuff
+	
+	-- Identifiers didn't have a match
+	if (not filename_identifier_start_clean) or (not filename_identifier_end) then
+		printe("process_data_series() | Identifiers are nil, filename: " ..tostring(data_filename).. ", start: " ..tostring(filename_identifier_start_clean).. ", end: " ..tostring(filename_identifier_end))
+		return
+	end
 	
 	-- Skip processing background files. Background correction is done before pixel- and file-wise corrections, so we don't even need correction.
 	if (spectra_info[data_filename]["Background filename"] == "Background_info") then return end
 	
-	-- Collect the files in corrected spectra folder
-	local f_end = string.gsub(file_end, "%.", "%%.") -- replace . with %. for pattern matching
-	local safe_search_filename = get_safe_pattern_string(data_filename) -- escape special characters like - and +
-	local patterns_or = "^" .. safe_search_filename .. "_(%d+)%-(%d+)" .. f_end .. "$" -- same input as data correction output
-	local series_files = match_files(corrected_path, f_end, sort_numerical_corr_filenames_fn, patterns_or)
+	-- Collect the files in Input_data_corrected (corrected spectra) folder
+	local pattern = compile_corrected_filename_pattern()
+	local patterns_or = pattern
+	local series_files = match_files(corrected_path, sort_corr_filenames_fn, patterns_or)
 	
-	
-	-- Save corrected spectra file in separate folder
+	-- Save corrected spectra file in separate folder (Input_data_corrected)
 	if (tableLength(series_files) == 0) or only_correct_spectra then -- only_correct_spectra does force-overwrite
 		
 		-- Load in input data, do data correction and save to corrected_path
 		process_raw_data_series(data_filename)
 		
 		-- Recheck files
-		series_files = match_files(corrected_path, f_end, sort_numerical_corr_filenames_fn, patterns_or) 
+		series_files = match_files(corrected_path, sort_corr_filenames_fn, patterns_or)
 		
 		-- Error in saving files
 		if (tableLength(series_files) == 0) then 
-			printe("process_data_series() | Saving corrected files failed. Skipping series: " .. data_filename)
+			printe("process_data_series() | Saving corrected files failed. Skipping series: " .. series_id)
 			return -- skip this series
 		end
 	end
@@ -1007,7 +1073,7 @@ function process_data_series(data_filename, experiment_check)
 	-- Check if file existed
 	if noise_stdevs then
 		for i,row_table in ipairs(noise_stdevs) do
-			if row_table[1] == data_filename then -- it's the line of current spectra file
+			if row_table[1] == series_id then -- it's the line of current spectra file
 				noise_stdevs = row_table
 				break
 			end
@@ -1058,9 +1124,10 @@ function process_data_series(data_filename, experiment_check)
 	
 	
 	-- Initialize file index, first batch start and end indices and spectra from file
+	local corr_file_extract_pattern = compile_corrected_filename_pattern()
 	local file_index, start_prev, end_prev
 	for i, filename in ipairs(series_files) do
-		s1_start, s1_end = string.match(series_files[i], "^.-_(%d+)%-(%d+)" .. f_end .. "$")
+		s1_start, s1_end = string.match(series_files[i], corr_file_extract_pattern)
 		s1_start = tonumber(s1_start)
 		s1_end = tonumber(s1_end)
 		
@@ -1081,7 +1148,7 @@ function process_data_series(data_filename, experiment_check)
 			
 			-- Experiment doesn't exist in the files
 			else
-				printe("process_data_series() | file_index initialization failed. File: "..data_filename.." Start index:"..tostring(start_ind) )
+				printe("process_data_series() | file_index initialization failed. Series: "..series_id.." Start index:"..tostring(start_ind) )
 				return
 			end
 		end
@@ -1114,7 +1181,8 @@ function process_data_series(data_filename, experiment_check)
 			then
 				file_index = file_index + 1
 				spectra2 = load_raw_spectra(corrected_path, series_files[file_index], separator)
-				s2_start, s2_end = string.match(series_files[file_index], "^.-_(%d+)%-(%d+)" .. f_end .. "$")
+				
+				s2_start, s2_end = string.match(series_files[file_index], corr_file_extract_pattern)
 				s2_start = tonumber(s2_start)
 				s2_end = tonumber(s2_end)
 		end
@@ -1124,11 +1192,11 @@ function process_data_series(data_filename, experiment_check)
 			if s2_end then -- is initialized, therefore has at least 2 batches
 				if (spectra_nr > s2_end) then -- last batch ends before input info suggests
 					spectra_nr = s2_end
-					printe("process_data_series() | Series is larger than input info suggests. File: "..data_filename.." File index: "..file_index.." s1_start: "..s1_start.." s1_end: "..s1_end.." s2_start: " ..tostring(s2_start).." s2_end: "..tostring(s2_end) )
+					printe("process_data_series() | Series is larger than input info suggests. Series: "..series_id.." File index: "..file_index.." s1_start: "..s1_start.." s1_end: "..s1_end.." s2_start: " ..tostring(s2_start).." s2_end: "..tostring(s2_end) )
 				end
 			elseif (spectra_nr > s1_end) then -- there's only one batch and it's smaller than input info suggests
 				spectra_nr = s1_end
-				printe("process_data_series() | Series is larger than input info suggests. File: "..data_filename.." File index: "..file_index.." s1_start: "..s1_start.." s1_end: "..s1_end )
+				printe("process_data_series() | Series is larger than input info suggests. Series: "..series_id.." File index: "..file_index.." s1_start: "..s1_start.." s1_end: "..s1_end )
 			end
 		end
 		
@@ -1171,7 +1239,7 @@ function process_data_series(data_filename, experiment_check)
 				spectrum_column = j - s2_start + 2 -- +1 is from wavelength column and +1 because series starts from 1
 			
 			else -- error
-				printe("process_data_series() | averaging spectrum isn't in either batch. File: "..data_filename.." Index: "..j.." s1_start: " ..s1_start.." s1_end: "..s1_end.." s2_start: " ..tostring(s2_start).." s2_end: "..tostring(s2_end) )
+				printe("process_data_series() | averaging spectrum isn't in either batch. Series: "..series_id.." Index: "..j.." s1_start: " ..s1_start.." s1_end: "..s1_end.." s2_start: " ..tostring(s2_start).." s2_end: "..tostring(s2_end) )
 			end
 			
 			-- Iterate through the spectrum table and sum the spectra
@@ -1230,7 +1298,7 @@ function process_data_series(data_filename, experiment_check)
 		
 		
 		-- Load the spectrum into GUI
-		dataset_from_table(current_spectrum, data_filename, current_spectrum_index)
+		dataset_from_table(current_spectrum, series_id, current_spectrum_index)
 		
 		
 		-- Process the spectrum (fitting)
@@ -1253,7 +1321,7 @@ function process_data_series(data_filename, experiment_check)
 	end
 	
 	
-	print("Series ".. data_filename .." done.")
+	print("Series ".. series_id .." done.")
 	
 	-- Resets all Fityk-side info (not LUA-side, that holds all necessary info)
 	reset()
@@ -1265,36 +1333,29 @@ function process_raw_data_series(data_filename)
 	db("process_raw_data_series", 2)
 	
 	-- Get files with data_filename beginning
-	--[[
-	local series_files = {}
-	local f_end = string.gsub(file_end, "%.", "%%.") -- replace . with %. for pattern matching
-	for filename in io.popen("dir \"" .. input_path .. "\" /b"):lines() do
-		
-		-- Spectra_info*.csv (.* means any character as much as possible and $ is end of string)
-		-- abc_P1.txt is matched with abc_P10.txt in using data_filename .. ".*" .. f_end
-		local direct_match = string.match(filename, "^" .. data_filename .. f_end .. "$") -- no number added to name
-		local numeric_filename = string.match(filename, "^" .. data_filename .. "%D+%d+" .. f_end .. "$") -- number added to name and is separated by non-number
-		if direct_match or numeric_filename then 
-			table.insert(series_files, filename)
-		end
-	end
-	table.sort(series_files) -- Sort filenames in ascending order for shot to correlate with file number
-	--]]
-	
-	-- Get files with data_filename beginning
 	local patterns_or = {}
-	local f_end = string.gsub(file_end, "%.", "%%.") -- replace . with %. for pattern matching
+	local filename_pattern = compile_filename_pattern(nil, nil, nil, file_end)
+	local safe_search_filename = get_safe_pattern_string(data_filename) -- escape special characters like - and +
+	local f_end = get_safe_pattern_string(file_end) -- escape special characters like .
+	local direct_match_pattern = "^" .. safe_search_filename .. f_end .. "$"
 	
 	-- "abc_P10.txt" and "abc_P1_001.txt" need to be different
 	-- and "abc_001.txt" and "abc_d_001.txt" need to be different
-	local safe_search_filename = get_safe_pattern_string(data_filename) -- escape special characters like - and +
-	table.insert(patterns_or, "^" .. safe_search_filename .. f_end .. "$") -- direct match
-	table.insert(patterns_or, "^" .. safe_search_filename .. "_%d+" .. f_end .. "$") -- numeric increment match, assumes Sophi nXt export ("_0001" appended)
-	local series_files = match_files(input_path, f_end, sort_numerical_filenames_fn, patterns_or)
+	table.insert(patterns_or, direct_match_pattern) -- direct match
+	table.insert(patterns_or, filename_pattern) -- numeric increment match
+	local series_files = match_files(input_path, sort_numerical_filenames_fn, patterns_or)
+	
+	if tableLength(series_files) <= 0 then
+		printe("process_raw_data_series() | No spectra found in series. data_filename: " ..tostring(data_filename).. ", direct_match_pattern: " ..tostring(direct_match_pattern).. ", filename_pattern: " ..tostring(filename_pattern))
+		print("Did you check is_complex_filename variable and make sure that the Spectra_info*.csv contains the filenames with correct format (e.g. direct match or with _0001)?")
+		return
+	end
 	
 	local target_nr = spectra_info[data_filename]["Series length"] or 1 -- how many spectra are in the series
 	local file_batches = {}
 	local batch_names = {}
+	
+	local corrected_id = compile_corrected_series_id()
 	
 	if target_nr > process_nr_spectra then -- too many spectra to read into memory, process as batches
 		local saved_nr = 0 -- how many spectra are saved in all previous batches combined
@@ -1313,7 +1374,7 @@ function process_raw_data_series(data_filename)
 			
 			if (nr_of_spectra_in_file > 0) then
 				if (saved_nr + nr_of_spectra_in_file) > target_nr then
-					printe("process_raw_data_series() | too many spectra in files vs known series length. Trying to read " .. filename)
+					printe("process_raw_data_series() | too many spectra in files vs known series length. You should correct the Spectra_info*.csv. Trying to read " .. filename)
 					break -- results in underpopulated series
 				end
 				
@@ -1328,7 +1389,7 @@ function process_raw_data_series(data_filename)
 					-- Save previous batch
 					if current_nr > 0 then -- save batch if there's something to save
 						table.insert(file_batches, batch_files)
-						table.insert(batch_names, data_filename.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
+						table.insert(batch_names, corrected_id.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
 					end
 					
 					-- Start new batch and increment statistics
@@ -1341,7 +1402,7 @@ function process_raw_data_series(data_filename)
 						
 						if current_nr > 0 then -- save batch if there's something to save
 							table.insert(file_batches, batch_files)
-							table.insert(batch_names, data_filename.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
+							table.insert(batch_names, corrected_id.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
 						end
 					end
 				end
@@ -1352,10 +1413,10 @@ function process_raw_data_series(data_filename)
 		
 		-- Save last batch
 		table.insert(file_batches, batch_files)
-		table.insert(batch_names, data_filename.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
+		table.insert(batch_names, corrected_id.."_"..(saved_nr + 1).."-"..(saved_nr + current_nr))
 		
 		if (saved_nr + current_nr) < target_nr then
-			printe("process_raw_data_series() | too few spectra in files vs known series length. Trying to read: " .. data_filename)
+			printe("process_raw_data_series() | too few spectra in files vs known series length. You should correct the Spectra_info*.csv and/or check is_complex_filename variable. Trying to read: " .. corrected_id)
 			printe("Old Input_data_corrected file?")
 		end
 		
@@ -1376,13 +1437,13 @@ function process_raw_data_series(data_filename)
 		-- Catch errors in input info vs actual series length
 		local target_nr = spectra_info[data_filename]["Series length"] or 1
 		if nr_of_spectra_in_file > target_nr then
-			printe("process_raw_data_series() | too many spectra in files vs known series length. Trying to read: " .. data_filename)
+			printe("process_raw_data_series() | too many spectra in files vs known series length. You should correct the Spectra_info*.csv. Trying to read: " .. corrected_id)
 		end
 		if nr_of_spectra_in_file < target_nr then
-			printe("process_raw_data_series() | too few spectra in files vs known series length. Trying to read: " .. data_filename)
+			printe("process_raw_data_series() | too few spectra in files vs known series length. You should correct the Spectra_info*.csv and/or check is_complex_filename variable. Trying to read: " .. corrected_id)
 		end
 		
-		batch_names[1] = data_filename.. "_1-" ..nr_of_spectra_in_file
+		batch_names[1] = corrected_id.. "_1-" ..nr_of_spectra_in_file
 	end
 	
 	-- Gather all noise stdevs from series
@@ -1390,7 +1451,7 @@ function process_raw_data_series(data_filename)
 	
 	-- Iterate over file batches and save the processed spectra in batches
 	for i,file_batch in ipairs(file_batches) do
-		local batch_name = batch_names[i] or data_filename
+		local batch_name = batch_names[i] or corrected_id
 		
 		-- Read input series into table
 		local data_table = load_raw_series(file_batch, target_nr)
@@ -1410,7 +1471,7 @@ function process_raw_data_series(data_filename)
 	end
 	
 	-- Save noise estimates
-	save_noise_stdevs(data_filename, series_noise_stdevs)
+	save_noise_stdevs(series_noise_stdevs)
 end
 
 -- Read data from original spectra series (on or multiple files) into LUA table
@@ -1487,7 +1548,8 @@ function load_raw_spectra(path, filename, separ)
 	for line in io.lines(filepath) do
 		
 		-- Check if row is empty
-		local non_empty = string.match(line, "([^" .. separ .. "]+)") -- ignore separators
+		local safe_separ = get_safe_pattern_string(separ) -- defuse special characters in identifier
+		local non_empty = string.match(line, "([^" ..safe_separ.. "]+)") -- ignore separators
 		
 		-- Skip empty line or only commas or comments
 		if (not line) or (line == "") or (not non_empty) then goto load_raw_data_continue end  
@@ -1517,6 +1579,10 @@ function load_raw_spectra(path, filename, separ)
 	return data_table
 end
 
+----------------------------
+-- Spectrum correction - sensitivity
+----------------------------
+
 -- Do file- and pixel-wise correction on spectra in table
 function data_correction(data_table, data_filename)
 	db("data_correction", 4)
@@ -1531,7 +1597,7 @@ function data_correction(data_table, data_filename)
 		
 		-- Check for errors in pixel_info file
 		if (tableLength(pixel_info[pixel_info_filename]["Measured unit"]) ~= tableLength(data_table)) then
-			printe("data_correction() | Number of pixels doesn't match the number of correct rows in Pixel_info file when using " .. tostring(data_filename))
+			printe("data_correction() | Number of pixels doesn't match the number of correct rows in Pixel_info file when using " .. tostring(compile_corrected_series_id()))
 		end
 		
 		-- Corrections info
@@ -1544,7 +1610,7 @@ function data_correction(data_table, data_filename)
 		avg_sensitivity_at_signal = (multipliers[center_pixel_index] + multipliers[center_pixel_index - 1] + multipliers[center_pixel_index + 1]) / 3
 	else
 		avg_sensitivity_at_signal = 1
-		printe("data_correction() | Pixel correction filename missing, skipping pixel intensity and wavelength correction for "..tostring(data_filename))
+		printe("data_correction() | Pixel correction filename missing, skipping pixel intensity and wavelength correction for "..tostring(compile_corrected_series_id()))
 	end
 	
 	-- Finds line detection threshold before sensitivity and x-axis correction
@@ -1592,7 +1658,8 @@ function data_correction(data_table, data_filename)
 	return data_table, noise_stdevs
 end
 
--- Subtract background from spectra if it's defined. Do this before other corrections, assuming that background is taken at same parameters as data.
+-- Subtract background (blind spectrum) from spectra if it's defined. 
+-- Do this before other corrections, assuming that background is taken at same parameters as data.
 function subtract_background(data_table, data_filename)
 	db("subtract_background", 4)
 	
@@ -1602,7 +1669,7 @@ function subtract_background(data_table, data_filename)
 	local background_table = load_raw_spectra(input_path, background_file, input_data_separator)
 	
 	if not background_table then
-		printe("subtract_background() | background_table is nil when using " .. tostring(data_filename))
+		printe("subtract_background() | background_table is nil when using " .. tostring(compile_corrected_series_id()))
 		return data_table
 	end
 	
@@ -1703,7 +1770,7 @@ function save_corrected_spectra(data_table, batch_name)
 end
 
 -- Save noise estimates
-function save_noise_stdevs(data_filename, series_noise_stdevs)
+function save_noise_stdevs(series_noise_stdevs)
 	db("save_noise_stdevs", 2)
 	
 	local filepath = corrected_path..noise_stdevs_file..file_end
@@ -1712,11 +1779,13 @@ function save_noise_stdevs(data_filename, series_noise_stdevs)
 	local init_file = io.open(filepath,"a")
 	io.close(init_file)
 	
+	local corrected_id = compile_corrected_series_id()
+	
 	-- check if stdevs for that file are already saved
 	local is_saved = false
 	for line in io.lines(filepath) do
 		local values = split(line,separator) -- table of csv values
-		if values[1] == data_filename then 
+		if values[1] == corrected_id then 
 			is_saved = true
 		end
 	end
@@ -1729,7 +1798,7 @@ function save_noise_stdevs(data_filename, series_noise_stdevs)
 		
 		-- Write noise stdevs
 		if series_noise_stdevs then
-			io.write("\n" .. data_filename..separator) -- filename
+			io.write("\n" .. corrected_id..separator) -- filename
 			for i,stdev in ipairs(series_noise_stdevs) do
 				io.write(tostring(series_noise_stdevs[i]))
 				if series_noise_stdevs[i+1] then -- don't write comma to the end of the line
@@ -1747,7 +1816,7 @@ end
 ----------------------------------------------------------------------
 
 -- Create a dataset from the provided table, takes 1st column of x-values and 2nd column of y-values
-function dataset_from_table(data_table, filename, spectrum_index, dataset_nr)
+function dataset_from_table(data_table, series_id, spectrum_index, dataset_nr)
 	db("dataset_from_table", 3)
 	
 	-- Select the dataset
@@ -1764,7 +1833,7 @@ function dataset_from_table(data_table, filename, spectrum_index, dataset_nr)
 	end
 	
 	-- Rename the dataset, so that output image looks better
-	F:execute("@0: title = \'"..tostring(filename)..","..tostring(spectrum_index).."\'") -- experiment starts at 1 by default
+	F:execute("@0: title = \'"..tostring(series_id)..","..tostring(spectrum_index).."\'") -- experiment starts at 1 by default
 	
 	--F:execute("@+ <\'" ..filepath.. "\':1:" .. startstr .. ".." .. endstr .. "::") -- Loads multiple experiments from file. 
 end
@@ -1802,7 +1871,8 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 		return
 	end
 	
-	print("Fitting experiment: "..data_filename..separator..tostring(spectrum_index))
+	local series_id = compile_corrected_series_id()
+	print("Fitting experiment: "..series_id..separator..tostring(spectrum_index))
 	
 	-- Generates and fits functions
 	local minimal_data_value, max_constant_value, max_height_values, angle_errors, polyline_values = fit_functions(data_filename)
@@ -1836,17 +1906,17 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 		--prepare_session_save(polyline_values)
 		
 		-- Save session
-		F:execute("info state > \'" ..sessions_path..data_filename..separator..spectrum_index.. ".fit\'")
+		F:execute("info state > \'" ..sessions_path..series_id..separator..spectrum_index.. ".fit\'")
 	end
 	
 	-- Plots current dataset with functions
-	if plot then plot_functions(data_filename, spectrum_index) end
+	if plot then plot_functions(series_id, spectrum_index) end
 	
-	print("Experiment: "..data_filename..separator..spectrum_index.." done.")
+	print("Experiment: "..series_id..separator..spectrum_index.." done.")
 	
 	-- Stop at current file for debugging
 	if stop then 
-		if F:input("Stop at file "..data_filename.."? [y/n]")  == 'y' then 
+		if F:input("Stop at series "..series_id.."? [y/n]")  == 'y' then 
 			print("Stopping the script because of your input")
 			stopscript = true
 			return
@@ -1879,7 +1949,8 @@ function load_raw_csv(filepath)
 	for line in io.lines(filepath) do
 		
 		-- Check if row is empty
-		local non_empty = string.match(line, "([^" .. input_data_separator .. "]+)") -- ignore separators
+		local safe_separ = get_safe_pattern_string(input_data_separator) -- defuse special characters in identifier
+		local non_empty = string.match(line, "([^" .. safe_separ .. "]+)") -- ignore separators
 		
 		-- Skip empty line or only commas or comments
 		if (not line) or (line == "") or (not non_empty) then goto load_raw_csv_continue end  
@@ -2006,7 +2077,7 @@ function fit_functions(data_filename)
 		
 		-- Prevent crash with line being so far that it's out of range and there's even no active datapoints
 		local minimal_data_value_temp, max_constant_value_temp, constant_parameters_temp, poly_tbl, influenced_line_indices -- define before goto to prevent errors
-		if (ending < cut_start) or (beginning > cut_end) then -- TODO: still crashes when creating line outside of dataset
+		if (ending < cut_start) or (beginning > cut_end) then
 			--goto skip_dummy_fit 
 		end
 		
@@ -2095,16 +2166,11 @@ function get_fn_name(lines_info_filename, line_index)
 	db("get_fn_name",4)
 	local sig_numbers = 6
 	
-	-- TODO: delete Ionization and just rename element to identificator
-	
 	-- Get function name
-	local identifier = lines_info[lines_info_filename][line_index]["Chemical element"]
-	--local ionization = ""
-	--if identifier ~= "_" then -- line is identified
-		--ionization = lines_info[lines_info_filename][line_index]["Ionization number (1 is neutrals)"]
-	--end
+	local identifier = lines_info[lines_info_filename][line_index]["Identificator"]
+	
 	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
-	--local function_name = identifier..ionization.. "_" .. decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
+	--local function_name = identifier.. "_" .. decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
 	
 	-- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
 	local function_name = identifier.. "_" .. decimalToInteger(line_position, sig_numbers) 
@@ -2116,7 +2182,7 @@ function get_fn_name(lines_info_filename, line_index)
 		
 		if i >= line_index then break -- only read up to current line_index
 		else 
-			if (identifier == info["Chemical element"]) and 
+			if (identifier == info["Identificator"]) and 
 				(decimalToInteger(line_position, sig_numbers) == decimalToInteger(pos, sig_numbers)) then
 				similar_lines_nr = similar_lines_nr + 1
 			end
@@ -2378,7 +2444,7 @@ function guess_parameter_constructor(lines_info_filename, line_index, minimal_da
 	end
 	
 	
-	local function_type = lines_info[lines_info_filename][line_index]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"]
+	local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
 	local max_position_shift = lines_info[lines_info_filename][line_index]["Max position shift (m)"]
 	local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"]
 	
@@ -2582,7 +2648,7 @@ function create_dummy_function(lines_info_filename, line_index)
 	db(line_position)
 	
 	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
-	local function_type = lines_info[lines_info_filename][line_index]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"]
+	local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
 	
 	-- Get function name
 	local function_name = get_fn_name(lines_info_filename, line_index)
@@ -2590,16 +2656,23 @@ function create_dummy_function(lines_info_filename, line_index)
 	--local sig_numbers = 6
 	--local pos_name = decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
 	
+	
 	-- gwidth, shape and fwhm might cause trouble if they're 0
 	if function_type == "Voigt" then -- Voigt
-		F:execute("guess %" .. function_name .. " = Voigt(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
+		F:execute("%" .. function_name .. " = Voigt(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
 	elseif function_type == "VoigtFWHM" then -- FWHM defined Voigt
-		F:execute("guess %" .. function_name .. " = VoigtFWHM(center = "..tostring(line_position)..", height = 0, fwhm = 1, shape = 1)")
+		F:execute("%" .. function_name .. " = VoigtFWHM(center = "..tostring(line_position)..", height = 0, fwhm = 1, shape = 1)")
 	elseif function_type == "VoigtApparatus" then -- Apparatus fn defined Voigt
-		F:execute("guess %" .. function_name .. " = VoigtApparatus(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
+		F:execute("%" .. function_name .. " = VoigtApparatus(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
 	else -- Gaussian and Lorentzian have same variables
-		F:execute("guess %" .. function_name .. " = Gaussian(center = "..tostring(line_position)..", height = 0, hwhm = 1)")
+		F:execute("%" .. function_name .. " = Gaussian(center = "..tostring(line_position)..", height = 0, hwhm = 1)")
 	end
+	
+	-- if line is guessed without any active datapoints then there's error 
+	-- guess: empty range
+	-- File not loaded or all points inactive.
+	-- Instead I create a line and add it to F functions
+	F:execute("F += %" ..function_name)
 end
 
 --[[
@@ -2865,7 +2938,7 @@ function get_errors(data_filename, minimal_data_value, max_constant_value, max_h
 		local line_position = functions[line_index]:get_param_value("center")
 		local min_FWHM = min_FWHM_function(line_position)
 		
-		local function_type = lines_info[lines_info_filename][line_index]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"]
+		local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
 		local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"] or infinity
 		if (function_type == "Voigt") or (function_type == "VoigtFWHM") or (function_type == "VoigtApparatus") then -- Voigt or Voigt defined by fwhm or Voigt defined by apparatus fn
 			
@@ -2969,7 +3042,8 @@ function write_output(data_filename, spectrum_index, errors)
 	local functions = F:get_components(0)
 
 	-- Writes dataset info
-	io.write(data_filename)
+	local series_id = compile_corrected_series_id()
+	io.write(series_id)
 	io.write(separator..spectrum_index)
 	io.write(separator..chi2)
 	io.write(separator..tostring(dof))
@@ -3017,7 +3091,7 @@ function write_output(data_filename, spectrum_index, errors)
 		
 		-- Get variables according to the fitted line type
 		local hwhm,gwidth,shape,GFWHM,LFWHM
-		local function_type = lines_info[lines_info_filename][line_index]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"]
+		local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
 		if function_type == "Voigt" then -- Voigt
 			gwidth = math.abs(functions[line_index]:get_param_value("gwidth"))
 			shape = math.abs(functions[line_index]:get_param_value("shape"))
@@ -3169,7 +3243,7 @@ function init_output(data_filename)
 	-- Iterate over lines
 	if lines_info_filename and table_size then 
 		for i = 1, table_size do -- iterate over lines
-			local fn_type = lines_info[lines_info_filename][i]["function to fit (0-Voigt; 1-Gaussian; 2-Lorentzian)"] -- line type
+			local fn_type = lines_info[lines_info_filename][i]["function to fit"] -- line type
 			local fn_name = get_fn_name(lines_info_filename, i) -- line name
 			local output_str = separator..tostring(i).." "..fn_name.." "..fn_type
 			io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
@@ -3221,6 +3295,48 @@ function init_output(data_filename)
 	io.write("\n")
 	io.close(file)
 end
+
+
+-- Copy-paste user_constants.lua to output folder (increment index if already exists)
+function save_user_constants()
+	
+	-- Get the filepath with the first index that isn't used
+	local index = get_output_user_constants_idx(1)
+	local output_filepath = compile_output_user_constants_filepath(index)
+	local input_filepath = info_folder.."user_constants.lua"
+	
+	local file_out = io.open(output_filepath, "w")
+	io.output(file_out)
+	
+	-- Copy the lines from input to output
+	for line in io.lines(input_filepath) do
+		io.write(line)
+		io.write("\n")
+	end
+	
+	io.close(file_out)
+end
+
+-- Recursive function that finds the first index that isn't used yet for user_constants.lua in the output
+function get_output_user_constants_idx(index)
+	local filepath = compile_output_user_constants_filepath(index)
+	
+	-- Check next index or return the available index
+	if file_exists(filepath) then
+		return get_output_user_constants_idx(index + 1)
+	else
+		return index
+	end
+end
+
+-- Get the filepath with the given index to the user_constants.lua in the output
+function compile_output_user_constants_filepath(index)
+	local filepath = output_path.. "user_constants"
+	if index >= 2 then filepath = filepath.."_"..tostring(index) end -- Add index if "user_constants.lua" exists
+	filepath = filepath..".lua" 
+	return filepath
+end
+
 
 -- Calculates full width at half area from the line. Uses a slow method of simply iterating over the pixels.
 function get_FWHA(FWHA_spectrum_index, function_type, height, center, hwhm, gwidth, shape, fwhm)
@@ -3289,7 +3405,7 @@ end
 
 -- Draws a plot of the dataset @0 and all it's functions the way
 -- it's rendered on the GUI
-function plot_functions(data_filename, spectrum_index)
+function plot_functions(series_id, spectrum_index)
 	db("plot_functions", 1)
 	
 	-- Find view limit ranges
@@ -3314,7 +3430,7 @@ function plot_functions(data_filename, spectrum_index)
 	if y_max then plot_command = plot_command..y_max end
 	
 	-- Draws an image from data and functions and saves it to output folder
-	plot_command = plot_command.."] @0 >> \'"..output_path..data_filename..separator..tostring(spectrum_index)..".png\'"
+	plot_command = plot_command.."] @0 >> \'"..output_path..series_id..separator..tostring(spectrum_index)..".png\'"
 	F:execute(plot_command)
 end
 
@@ -3486,8 +3602,274 @@ function get_safe_pattern_string(str)
 	return str
 end
 
+
+-- Test whether files have extension (e.g. ".txt") and remove it
+function remove_filename_extension(filename)
+	if not filename then return end
+
+	local end_pattern = "^.+(%.[%a%d]-)$" -- string start, any characters (1 or more), [extracted] ., [extracted] alphanumeric characters (0 or more but min amount), string end
+	local file_ext = string.match(filename, end_pattern)
+	local has_file_end = (file_ext ~= nil)
+	if has_file_end then filename = string.gsub(filename, file_ext, "") end -- remove file end
+	
+	return filename
+end
+
+
+
+-- Sort the filenames given in Spectra_info*.csv. There might be the index of the first spectrum in the filename, 
+-- e.g. one file is "abc.txt", other is "def_0001_x.txt" (contains 200 spectra), third is "def_0201_x.txt".
+-- Ordinary sort gives 0,1,100,1001,1002,2,3,871,99... (sorts string).
+-- This sort gives 0,1,2,3,99,100,101,871,1001,1002 (sorts number).
+-- The function assumes that you get the full filename like "abc.txt" or "abc_cd,e_f_127.txt" but ".txt" can be omitted
+function sort_spectra_info_filenames(filename1,filename2)
+	db("sort_spectra_info_filenames", 5)
+	
+	-- Test whether files have extension (e.g. ".txt") and remove it
+	filename1 = remove_filename_extension(filename1)
+	filename2 = remove_filename_extension(filename2) -- 2nd file might have different extension, remove it too
+	
+	-- Get the filename format in order to extract index from these
+	local id_start1, index1, id_end1 = extract_file_identifier(filename1)
+	local nr_of_digits1 = index1 and string.len(index1) or nil
+	local id_start2, index2, id_end2 = extract_file_identifier(filename2)
+	local nr_of_digits2 = index2 and string.len(index2) or nil
+	--print(filename1, id_start1, index1, id_end1)
+	--print(filename2, id_start2, index2, id_end2)
+	
+	-- Errors in matching the filename pattern (no match)
+	if (not id_start1) or (not index1) or (not id_end1) or
+		(not id_start2) or (not index2) or (not id_end2) 
+	then
+		--printe("sort_spectra_info_filenames() | 1st filename doesn't match pattern, filename: " .. filename1) -- is reported in extract_file_identifier()
+		return
+	end
+	
+	-- The filenames are formatted correctly and there was a match
+	
+	-- Both filenames match and have (different) indices
+	if (id_start1 == id_start2) and (id_end1 == id_end2) and (nr_of_digits1 > 0) and (nr_of_digits2 > 0) then
+		-- Convert to number to get rid of leading zeroes, no extracted digits is assumed to be 1
+		local filename1_nr = tonumber(index1) or 1
+		local filename2_nr = tonumber(index2) or 1
+		
+		-- Sort according to index digits
+		return filename1_nr < filename2_nr
+	end
+	
+	
+	-- There's a situation where one filename is direct match (e.g. only one spectrum in series) and other is with _ and index.
+	-- Usually last digits of the identifier show crater/point number or such (makes sense to sort), e.g. "abc_P1_001.txt" and "abc_P10.txt"
+	-- Remove index and check if there are digits at the end of the identifier and sort by those or otherwise sort filenames directly
+	
+	
+	-- If name contains index and index is preceeded by _ then remove it for comparison
+	local clean_id_start1 = id_start1
+	local clean_id_start2 = id_start2
+	if (nr_of_digits1 > 0) then
+		local last_char = string.sub(id_start1, -1)
+		if last_char == "_" then clean_id_start1 = string.sub(id_start1, 1, -2) end
+	end
+	if nr_of_digits2 and (nr_of_digits2 > 0) then
+		local last_char = string.sub(id_start2, -1)
+		if last_char == "_" then clean_id_start2 = string.sub(id_start2, 1, -2) end
+	end
+	local name1 = clean_id_start1..id_end1
+	local name2 = clean_id_start2..id_end2
+	
+	-- Check for digits at the end of the filenames
+	local pattern_end_digits = "^(.-)(%d*)$" -- str start, any characters (0 or more), [extracted] digits (0 or more), str end
+	local root1, digits1 = string.match(name1, pattern_end_digits)
+	local root2, digits2 = string.match(name2, pattern_end_digits)
+	
+	-- The filenames match and only last digits in the identifier are different, sort by those digits
+	if root1 and (root1 == root2) then
+		-- Convert to number to get rid of leading zeroes, no extracted digits is assumed to be 1
+		local digits1_nr = tonumber(digits1) or 1
+		local digits2_nr = tonumber(digits2) or 1
+		
+		-- Sort according to identifier last digits
+		return digits1_nr < digits2_nr
+	end
+	
+	
+	-- If filename patterns don't match and/or there's no index then sort filenames directly
+	return filename1 < filename2
+end
+
+
+-- Extract the identifier (two parts) from the filename in Spectra_info*.csv, 
+-- so that experiment index can be extracted from the filename later.
+-- The filename must contain index 1 preceded by zeros to match the first spectrum filename in the series.
+-- if is_complex_filename then the index must be preceded by _.
+function extract_file_identifier(filename)
+	db("extract_file_identifier", 6)
+	
+	-- Reset the global variables
+	filename_identifier_start = nil
+	filename_identifier_end = nil
+	filename_index_digits_nr = nil
+	filename_identifier_start_clean = nil
+	
+	-- remove the extension (e.g. ".txt")
+	filename = remove_filename_extension(filename)
+	
+	-- Extract the filename format
+	local id_start, index, id_end
+	if is_complex_filename then -- complex filename mode
+		-- This part is tricky and messy. The filenames contain _001 or _0001 (hopefully not 2 digits ever) as the index.
+		-- However, the indices might be at the end of the file (before extension) or in the middle of the filename.
+		-- This means that the identifier contains two parts: beginning and end (potentially empty string).
+		-- Unfortunately, the identifier contains _ characters, could contain special characters for LUA, 
+		-- and can contain part of the filename also in _0001 format (experimental data like delay time).
+		-- Only semi-foolproof way I see to solve this is if the user supplies file names in spectra info
+		-- with the first index (e.g. abc_00001 or abc_0001 or abc_001 instead of abc_). 
+		-- I'm assuming the index never has 2 digits because it would be very prone to (logical) errors.
+		
+		-- TODO: what if files are abc_0001_x.txt and abc_0201_x.txt (second file contains spectra starting from index 201)?
+		-- TODO: check if filename contains _0001 multiple times, currently last one is chosen as the index
+		-- TODO: fix situation when filename contains _0001 multiple times but index isn't the last one
+		
+		
+		-- check if there's _000001 pattern
+		local pattern = "^(.+_)(000001)(.*)$" -- str start, [extracted] any characters (1 or more) and _, [extracted] index, [extracted] any characters (0 or more), str end
+		id_start, index, id_end = extract_pattern_from_filename(filename, pattern)
+		
+		-- check if there's _00001 pattern
+		if (not id_start) then
+			pattern = "^(.+_)(00001)(.*)$" -- str start, [extracted] any characters (1 or more) and _, [extracted] index, [extracted] any characters (0 or more), str end
+			id_start, index, id_end = extract_pattern_from_filename(filename, pattern)
+		end
+		
+		-- check if there's _0001 pattern
+		if (not id_start) then
+			pattern = "^(.+_)(0001)(.*)$" -- str start, [extracted] any characters (1 or more) and _, [extracted] index, [extracted] any characters (0 or more), str end
+			id_start, index, id_end = extract_pattern_from_filename(filename, pattern)
+		end
+		
+		-- check if there's _001 pattern
+		if (not id_start) then
+			pattern = "^(.+_)(001)(.*)$" -- str start, [extracted] any characters (1 or more) and _, [extracted] index, [extracted] any characters (0 or more), str end
+			id_start, index, id_end = extract_pattern_from_filename(filename, pattern)
+		end
+		
+		-- Assumes that the filename doesn't contain an index and is a direct match
+		if (not id_start) then
+			id_start = filename
+			index = ""
+			id_end = ""
+		end
+	
+	else -- simple filename mode, index is at the end of the filename
+		local pattern = "^(.-)(%d*)$" -- str start, any characters (0 or more), [extracted] digits (0 or more), str end
+		id_start, index = string.match(filename, pattern)
+		id_end = ""
+		
+		-- Make sure it's the index (index 1), not a part of the identifier
+		local length = string.len(index) -- at least 3 digits (001 or 0001)
+		local nr = tonumber(index) -- index 1 (001, not 002)
+		if (length < 3) or (nr ~= 1) then -- not the index, filename is the direct match
+			index = ""
+			id_start = filename
+		end
+	end
+	
+	-- Error in matching the filename pattern (no match)
+	if (not id_start) or (not index) or (not id_end) then
+		printe("extract_file_identifier() | filename doesn't match pattern, complex filename mode: " ..tostring(is_complex_filename).. ", filename: " ..filename)
+		return nil, nil, nil
+	end
+	
+	-- Output the values into global variables
+	filename_identifier_start = id_start
+	filename_identifier_end = id_end
+	
+	-- get number of digits of the filename index
+	filename_index_digits_nr = string.len(index)
+	
+	-- Remove _ if it's the last character in filename_identifier_start
+	filename_identifier_start_clean = id_start
+	local last_char = string.sub(id_start, -1)
+	if (last_char == "_") and filename_index_digits_nr and (filename_index_digits_nr > 0) then filename_identifier_start_clean = string.sub(id_start, 1, -2) end
+	
+	return id_start, index, id_end
+end
+
+
+-- Extracts filename pattern. If there isn't a match then returns nil-s instead.
+function extract_pattern_from_filename(filename, pattern)
+	db("extract_pattern_from_filename", 6)
+	
+	local id_start, index, id_end = string.match(filename, pattern)
+	if id_start and index and id_end then
+		return id_start, index, id_end
+	end
+	return nil,nil,nil
+end
+
+
+-- Compile filename search pattern for the series
+function compile_filename_pattern(start_id, index_nr, end_id, extension)
+	local pattern = compile_filename_pattern_open(start_id, index_nr, end_id)
+	
+	-- Add file extension
+	if extension then
+		local safe_extension = get_safe_pattern_string(extension)
+		pattern = pattern .. safe_extension
+	end
+	
+	-- Finalize the pattern (string end)
+	pattern = pattern .. "$"
+	return pattern
+end
+
+-- Compile corrected filename search pattern for the series without the extension and file end
+function compile_filename_pattern_open(start_id, index_nr, end_id)
+	start_id = start_id or filename_identifier_start
+	index_nr = index_nr or filename_index_digits_nr
+	end_id = end_id or filename_identifier_end
+	
+	-- Escape special LUA characters
+	local safe_start = get_safe_pattern_string(start_id)
+	local safe_end = get_safe_pattern_string(end_id)
+	
+	-- Get filename pattern
+	local pattern
+	if index_nr and (index_nr > 0) then -- index exists
+		local digits_str = string.rep("%d", index_nr)
+		pattern = "^" ..safe_start.. "(" ..digits_str.. ")" ..safe_end -- extract digits
+	else -- no index
+		pattern = "^" ..safe_start..safe_end
+	end
+	
+	return pattern
+end
+
+-- Compile the pattern for a corrected spectra filename (e.g. "^abc_def_1-50.txt$" when original first was "^abc_0001_def.txt$")
+-- Extracts two items: start spectrum idx and end spectrum idx of the file
+function compile_corrected_filename_pattern(start_id_clean, end_id)
+	local identifier = compile_corrected_series_id(start_id_clean, end_id)
+	local safe_identifier = get_safe_pattern_string(identifier)
+	local safe_extension = get_safe_pattern_string(file_end) -- escape special characters like - and +
+	
+	-- Compile pattern
+	local pattern = "^"..safe_identifier -- filename pattern without index, extension and string end
+	pattern = pattern .. "_(%d+)%-(%d+)" -- add corrected spectra indices range, same input as data correction output, [extracted] digits (greedy 1 or more), -, [extracted] digits (greedy 1 or more)
+	pattern = pattern .. safe_extension .. "$" -- add extension and finalize pattern
+	
+	return pattern
+end
+
+-- Compile the indentifier of a corrected file's name
+function compile_corrected_series_id(start_id_clean, end_id)
+	start_id_clean = start_id_clean or filename_identifier_start_clean
+	end_id = end_id or filename_identifier_end
+	local identifier = start_id_clean..end_id
+	return identifier
+end
+
 -- Search a folder for files that match the provided pattern, if no pattern then return all files
-function match_files(path, f_end, sort_fn, patterns_or, patterns_and)
+function match_files(path, sort_fn, patterns_or, patterns_and)
 	
 	-- Get files with data_filename beginning
 	local files = {}
@@ -3508,10 +3890,12 @@ function match_files(path, f_end, sort_fn, patterns_or, patterns_and)
 		end
 		
 		-- AND matches
-		if patterns_and then
+		if patterns_and and (type(patterns_or) == "table") then
 			for i,pattern in pairs(patterns_and) do
 				bool = bool and string.match(filename, pattern)
 			end
+		elseif patterns_and then
+			bool = bool and string.match(filename, patterns_and)
 		end
 		
 		if bool then 
@@ -3524,108 +3908,82 @@ function match_files(path, f_end, sort_fn, patterns_or, patterns_and)
 	return files
 end
 
--- Sort gives 0,1,100,1001,1002,2,3,871,99... This sort gives 0,1,2,3,99,100,101,871,1001,1002
+
+-- Sort the filenames given in Input_data_corrected folder. E.g. "idStart_idEnd201-250.txt" contains 50 spectra.
+-- Ordinary sort gives 0,1,100,1001,1002,2,3,871,99... (sorts string).
+-- This sort gives 0,1,2,3,99,100,101,871,1001,1002 (sorts number).
 -- The function assumes that you get the full filename like "abc_1-201.txt" or "abc_cd,e_f_127_1-201.txt" but ".txt" can be omitted
 -- Only sorts according to first number in corrected files
-function sort_numerical_corr_filenames_fn(filename1,filename2)
+function sort_corr_filenames_fn(filename1,filename2)
+	db("sort_corr_filenames_fn", 5)
 	
-	-- Test whether files have end part (e.g. ".txt") and remove it
-	local end_pattern = "^.+(%.[%a%d]-)$" -- any characters (1 or more), [extracted] ., [extracted] alphanumeric characters (1 or more)
-	local file_ext1 = string.match(filename1, end_pattern)
-	local has_file_end1 = (file_ext1 ~= nil)
-	if has_file_end1 then filename1 = string.gsub(filename1, file_ext1, "") end -- remove file end
-	local file_ext2 = string.match(filename2, end_pattern) -- 2nd file might have different extension, ignore it
-	local has_file_end2 = (file_ext2 ~= nil)
-	if has_file_end2 then filename2 = string.gsub(filename2, file_ext2, "") end -- remove file end
-	
-	
-	-- Extract digits from the end of the filenames
-	local pattern = "^(.-)(%d+)%-%d+$" -- any characters (0 or more), [extracted] digits (1 or more), -, digits (1 or more)
-	local f1_root, f1_digits = string.match(filename1, pattern)
-	local f2_root, f2_digits = string.match(filename2, pattern)
-	
-	-- If filename beginning doesn't match then sort filenames by the beginning
-	if f1_root ~= f2_root then
-		if (not f1_root) or (not f2_root) then  -- some error
-			printe("sort_numerical_corr_filenames_fn() | Root doesn't exist: " .. tostrint(f1_root) .. ", " .. tostring(f2_root))
-			return 
-		end
-		
-		return f1_root < f2_root
-	end
-	
-	-- Errors in matching the filename pattern (no match)
-	if not f1_digits then
-		printe("sort_numerical_filenames_fn() | 1st filename doesn't match pattern, filename: " .. filename1)
+	-- Identifiers weren't found
+	if (not filename_identifier_start_clean) or (not filename_identifier_end) then
+		printe("sort_corr_filenames_fn() | Identifiers are nil, start: " ..tostring(filename_identifier_start_clean).. ", end: " ..tostring(filename_identifier_end))
 		return
 	end
-	if not f2_digits then
-		printe("sort_numerical_filenames_fn() | 2nd filename doesn't match pattern, filename: " .. filename2)
+	
+	-- Test whether files have extension (e.g. ".txt") and remove it
+	--filename1 = remove_filename_extension(filename1)
+	--filename2 = remove_filename_extension(filename2) -- 2nd file might have different extension, remove it too
+	
+	-- Get the pattern and match both filenames
+	local pattern = compile_corrected_filename_pattern(filename_identifier_start_clean, filename_identifier_end)
+	local f1_digits1, f1_digits2 = string.match(filename1, pattern)
+	local f2_digits1, f2_digits2 = string.match(filename2, pattern)
+	
+	-- Match wasn't found (unexpected)
+	if (not f1_digits1) or (not f1_digits2) then
+		printe("sort_corr_filenames_fn() | Filename 1 didn't match pattern. Filename: " ..tostring(filename1).. ", pattern: " ..tostring(pattern))
+		return
+	elseif (not f2_digits1) or (not f2_digits2) then
+		printe("sort_corr_filenames_fn() | Filename 2 didn't match pattern. Filename: " ..tostring(filename2).. ", pattern: " ..tostring(pattern))
 		return
 	end
 	
 	-- Convert to number to get rid of leading zeroes, no extracted digits is assumed to be 1
-	local filename1_nr = tonumber(f1_digits) or 1
-	local filename2_nr = tonumber(f2_digits) or 1
+	local filename1_nr = tonumber(f1_digits1) or 1
+	local filename2_nr = tonumber(f2_digits1) or 1
 	
-	-- Filenames match, only file end can be different
-	if (f1_root == f2_root) and (filename1_nr == filename2_nr) then
-		return filename1 < filename2
-	end
-	
-	-- Sort according to end digits
+	-- Sort according to first spectrum index
 	return filename1_nr < filename2_nr 
 end
+
 
 -- Sort gives 0,1,100,1001,1002,2,3,871,99... This sort gives 0,1,2,3,99,100,101,871,1001,1002
 -- The function assumes that you get the full filename like "abc.txt" or "abc_cd,e_f_127.txt" but ".txt" can be omitted
 function sort_numerical_filenames_fn(filename1,filename2)
+	db("sort_numerical_filenames_fn", 5)
 	
-	-- Test whether files have end part (e.g. ".txt") and remove it
-	local end_pattern = "^.+(%.[%a%d]-)$" -- any characters (1 or more), [extracted] ., [extracted] alphanumeric characters (1 or more)
-	local file_ext1 = string.match(filename1, end_pattern)
-	local has_file_end1 = (file_ext1 ~= nil)
-	if has_file_end1 then filename1 = string.gsub(filename1, file_ext1, "") end -- remove file end
-	local file_ext2 = string.match(filename2, end_pattern) -- 2nd file might have different extension, ignore it
-	local has_file_end2 = (file_ext2 ~= nil)
-	if has_file_end2 then filename2 = string.gsub(filename2, file_ext2, "") end -- remove file end
-	 
-	-- Extract digits from the end of the filenames
-	local pattern = "^(.-)(%d*)$" -- any characters (0 or more), [extracted] digits (0 or more) before the end
-	local f1_root, f1_digits = string.match(filename1, pattern)
-	local f2_root, f2_digits = string.match(filename2, pattern)
-  
-	-- If filename beginning doesn't match then sort filenames by the beginning
-	if f1_root ~= f2_root then
-	  if (not f1_root) or (not f2_root) then  -- some error
-	    printe("sort_numerical_filenames_fn() | Root doesn't exist: " .. tostrint(f1_root) .. ", " .. tostring(f2_root))
-	    return 
-	  end
-	  
-		return f1_root < f2_root
-	end
+	-- Test whether files have extension (e.g. ".txt") and remove it
+	filename1 = remove_filename_extension(filename1)
+	filename2 = remove_filename_extension(filename2) -- 2nd file might have different extension, remove it too
 	
-	-- Errors in matching the filename pattern (no match)
-	if not f1_digits then
-		printe("sort_numerical_filenames_fn() | 1st filename doesn't match pattern, filename: " .. filename1)
-		return
-	end
-	if not f2_digits then
-		printe("sort_numerical_filenames_fn() | 2nd filename doesn't match pattern, filename: " .. filename2)
-		return
-	end
+	-- Get the filename format in order to extract index from these
+	local nr_of_digits = filename_index_digits_nr
+	-- The code shouldn't get this far if any of the global variables is nil
 	
-	-- Convert to number to get rid of leading zeroes, no extracted digits is assumed to be 1
-	local filename1_nr = tonumber(f1_digits) or 1
-	local filename2_nr = tonumber(f2_digits) or 1
-	
-	-- Filenames match, only file end can be different
-	if (f1_root == f2_root) and (filename1_nr == filename2_nr) then
+	-- There is no index, sort filenames directly
+	if nr_of_digits <= 0 then
 		return filename1 < filename2
 	end
 	
-	-- Sort according to end digits
-	return filename1_nr < filename2_nr 
+	-- Create the search pattern and check if the filenames follow the same pattern
+	local pattern = compile_filename_pattern()
+	local index1 = string.match(filename1, pattern) -- nil if no match
+	local index2 = string.match(filename2, pattern) -- nil if no match
+	
+	-- If filename patterns don't match then sort filenames directly
+	if (not index1) or (not index2) then
+		return filename1 < filename2
+	end
+	
+	-- Convert to number to get rid of leading zeroes, no extracted digits is assumed to be 1
+	local filename1_nr = tonumber(index1) or 1
+	local filename2_nr = tonumber(index2) or 1
+	
+	-- Sort according to index digits
+	return filename1_nr < filename2_nr
 end
 
 -- Prints every key and value of table
@@ -3674,8 +4032,8 @@ function printe(str, priority)
 end
 
 -- Check if file exists. Returns false for a directory
-function file_exists(name)
-	local f=io.open(name,"r")
+function file_exists(filepath)
+	local f=io.open(filepath,"r")
 	if f~=nil then 
 		io.close(f)
 		return true 

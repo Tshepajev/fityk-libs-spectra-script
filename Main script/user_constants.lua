@@ -37,7 +37,7 @@ stopscript_name = "Stopscript.txt"
 
 
 -- What type of data files do you want to input? If eg .asc is already in info file filenames then write "".
--- Regex will use this in search and will consider . symbol. Don't use other special regex symbols!
+-- Regex will use this in search and will consider . symbol.
 file_end = ".txt"
 
 
@@ -57,6 +57,41 @@ csv_string_char = "\"" -- " as string in csv file
 
 -- Filename without the file extension of noise standard deviations file
 noise_stdevs_file = "_Noise_stdevs"
+
+--[[
+This variable is used to check how to extract the experiment series identifier from a filename.
+It also determines how you must input the filename in Spectra_info*.csv.
+If you're using JET LIBS spectra (2024) then this must be set to true, if not then it's optional.
+
+Note that in Spectra_info*.csv you have to either provide a direct match of the filename OR 
+you have to provide the entire filename, where the index is 1, preceded by zeros, so it matches the actual 
+filename containing the first spectrum of the series (e.g. if index always has 3 digits then the index must be "001"). 
+That filename represents the entire experimental series, so index can change but identifier is locked in place.
+This could be "abc0001" or "abc_0001_def" (second one must have _ before the index).
+You can but don't have to add an extension (e.g. ".txt"), it gets ignored.
+
+You are expected to input files with the index in them clearly separated. 
+E.g. if the index is "001" and the filename is "abc_point2001.txt" then "001" gets extracted properly, 
+but if the index is "001" and the filename is "abc_point10001.txt" then "0001" would get extracted (wrong and causes errors).
+Ideally you have named the files better during experiments, e.g. "abc_point10_001.txt". There's only so much that the code can reliably do.
+
+If you always have spectrum index at the end of the filename before extension (e.g. "abc255.txt") 
+then leave is_complex_filename to false and put "abc001" in Spectra_info*.csv (faster, more foolproof). 
+
+If you might have (but can be at the end) spectrum index in the middle of the filename (e.g. "abc_0255_def_2500_x.txt" with 0255 being index),
+then change is_complex_filename to true and put the filename of the first spectrum "abc_0001_def_2500_x" in Spectra_info*.csv.
+The index must be 1 and must be preceded by zeros, so it matches the actual filename containing the first spectrum, 
+and the index digits must be preceded by _ (different from is_complex_filename = false).
+is_complex_filename = true isn't as foolproof, since the filename might contain experimental 
+parameters e.g. "abc_delay_001ms.txt", which doesn't contain an index but is a direct filename match.
+The algorithm checks for "00001", then "0001" etc. (min 3 digits), until a match is found. If the filename has two matches (error?) then
+the last one is chosen as the index location.
+
+If you don't have an index in the filename (e.g. series consists of only one experiment or that one file contains all 
+spectra of the series), then just put the filename in Spectra_info*.csv. If you only have filenames without indices then 
+is_complex_filename doesn't matter.
+--]]
+is_complex_filename = false
 
 
 ----------------------------------------------------------------------
@@ -116,7 +151,7 @@ moving_average_pixels_radius = 0
 
 
 -- How many spectra from a series are held in memory simultaneously? This is important when input files have many experiments and/or 
--- each experiment has many pixels. E.g. for 40 000 px per experiment batch process_nr_spectra of 50-100 is good.
+-- each experiment has many pixels. E.g. for 40 000 px per experiment batch process_nr_spectra of 30-60 is good.
 process_nr_spectra = 50
 
 
