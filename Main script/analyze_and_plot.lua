@@ -92,7 +92,7 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	apparatus_fn_fwhm
 	apparatus_function_fwhm -- function
 	min_FWHM_function -- function
-	max_line_influence_diameter -- TODO: default value here and specific diameters in Lines_info*.csv?
+	default_max_line_influence_radius
 	high_constant_bound_percentile
 	max_Voigt_shape
 	min_Voigt_shape
@@ -113,6 +113,8 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	stop_after_file
 	stop_before_lines
 	stop_before_fitting
+	stop_after_fit_window
+	stop_after_lock_lines
 	
 --]]
 
@@ -126,7 +128,6 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 -- TODO: Write readmes for linked variables
 -- TODO: Update changelog
 -- TODO: Create new examples
--- TODO: activate and unlock all windows of lines that are linked
 -- TODO: use polyline directly instead of constants as local constant?
 -- TODO: improve local constant algorithm when multiple active regions of linked lines are fitted
 
@@ -153,7 +154,7 @@ last_error_msg = nil
 -- Initialize table for holding input_info folder data
 spectra_info, pixel_info, lines_info = {},{},{}
 
--- The filename for the Lines_info*.csv to use with the currently processed spectrum
+-- The filename for the Lines_info*.csv to use with the currently processed spectra series
 lines_info_filename = nil
 
 -- The format in which the filename is constructed
@@ -205,6 +206,12 @@ function main_program()
 	
 	-- Reset and initialize Fityk (keeps LUA variables and Fityk GUI formatting, but e.g. user defined functions are deleted)
 	reset()
+	
+	print([[
+	Starting calculations. 
+	The GUI will be mostly frozen during this process. 
+	To stop the script prematurely write something in ]]..stopscript_name..[[ in Input_info folder and save the file.
+	]])
 	
 	-- Load info from info files to LUA tables
 	load_info()
@@ -303,7 +310,7 @@ end
 -- Deletes all variables
 function delete_variables()
 	db("delete_variables",4)
-	variables = F:all_variables()
+	local variables = F:all_variables()
 	for i = #variables-1,0,-1 do
 		F:execute("delete $"..variables[i].name)
 	end
@@ -313,7 +320,7 @@ end
 -- Deletes all functions for dataset
 function delete_functions(dataset_i)
 	db("delete_functions",4)
-	functions = F:get_components(dataset_i)
+	local functions = F:get_components(dataset_i)
 	for function_index = #functions-1,0,-1 do
 		F:execute("delete %"..functions[function_index].name)
 	end
@@ -334,7 +341,7 @@ end
 function delete_all()
 	db("delete_all",4)
 	-- Deletes datasets
-	series_length = F:get_dataset_count()
+	local series_length = F:get_dataset_count()
 	for dataset_i = series_length-1,0,-1 do
 		F:execute("use @"..dataset_i)
 		delete_dataset(dataset_i)
@@ -622,6 +629,7 @@ function check_line_info_value(title, value)
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity, -- almost infinity
 		["Identificator"] = "_",
+		["Max influence radius"] = default_max_line_influence_radius,
 		["Linked variables"] = nil
 	}
 	
@@ -668,6 +676,7 @@ function validate_lines_info()
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity,
 		["Identificator"] = "_",
+		["Max influence radius"] = default_max_line_influence_radius,
 		["Link parameters"] = nil
 	}
 	
@@ -982,9 +991,6 @@ function process_data(file_check, experiment_check)
 	
 	-- avoid overwriting previous output
 	check_output_paths()
-	
-	-- Copy user_constants.lua to the output (increment index if already exists)
-	save_user_constants()
 	
 	-- Checks whether to view 1 file
 	if file_check then
@@ -1345,59 +1351,61 @@ function get_lines_info_filename(data_filename)
 	local table_size
 	local potential_filenames = {}
 	
-		
 	-- Collect lines_files to be used
 	local lines_files = {}
 	for data_filename, info in pairs(spectra_info) do
-		table.insert(lines_files, info["Lines filename"])
+		lines_files[info["Lines filename"]] = true
 	end
-	
-	-- Check if any lines file are defined
-	if tableLength(lines_files) > 0 then
-		
-		-- Iterate over defined files
-		for i, filename in ipairs(lines_files) do
-			
-			-- Get nr of lines defined in the file
-			local size = tableLength(lines_info[filename])
-			table_size = table_size or size -- initialize value
-			
-			-- Save the longest list filenames
-			if size == table_size then
-				table.insert(potential_filenames, filename)
-			
-			-- overwrite variable values because there's even longer list
-			elseif size > table_size then
-				potential_filenames = {[1] = filename} -- (re)initialize
-				table_size = size
-				
-				printe("get_lines_info_filename() | lines info is different size in different specified input files, taking longest list. You might want to input only spectra with same lines.") -- print error log
-			end
-		end
 	
 	-- no lines file specified, find longest list from all files in input info folder
-	else 
-		for filename, info in pairs(lines_info) do
-			
-			-- Get nr of lines defined in the file
-			local size = tableLength(info)
-			table_size = table_size or size -- initialize value
-			
-			-- Save the longest list filenames
-			if size == table_size then
-				table.insert(potential_filenames, filename)
-			
-			-- overwrite variable values because there's even longer list
-			elseif size > table_size then
-				potential_filenames = {[1] = filename} -- (re)initialize
-				table_size = size
+	if tableLength(lines_files) <= 0 then
+		lines_files = lines_info
+	end
+	
+	local files_are_different = false
+	local wavelengths = {}
+	local ids = {}
+	
+	-- Iterate over defined files
+	for filename,_ in pairs(lines_files) do
+		
+		-- Iterate over lines and check if the files match
+		for line_index, info in ipairs(lines_info[filename]) do
 				
-				printe("get_lines_info_filename() | lines info is different size in different input files in input info folder, taking longest list. You might want to input only spectra with same lines.") -- print error log
+			-- Check if the lines in different files match
+			if not files_are_different then
+				
+				-- initialize the wavelength and ID 
+				wavelengths[line_index] = wavelengths[line_index] or info["Wavelength (m)"]
+				ids[line_index] = ids[line_index] or info["Identificator"]
+				
+				-- scheck if wavelength and ID match with previously saved ones.
+				files_are_different = files_are_different or (wavelengths[line_index] ~= info["Wavelength (m)"])
+				files_are_different = files_are_different or (ids[line_index] ~= info["Identificator"])
 			end
+		end
+		
+		-- Get nr of lines defined in the file
+		local size = tableLength(lines_info[filename])
+		table_size = table_size or size -- initialize value
+		
+		-- Save the longest list filenames
+		if size == table_size then
+			table.insert(potential_filenames, filename)
+		
+		-- overwrite variable values because there's even longer list
+		elseif size > table_size then
+			potential_filenames = {[1] = filename} -- (re)initialize
+			table_size = size
+			
+			files_are_different = true
 		end
 	end
 	
-	-- TODO: check if also the defined line identifiers are the same in all files
+	-- print error log
+	if files_are_different then
+		print("WARNING! get_lines_info_filename() | lines info is different in specified input files (different size list or different wavelengths and Identificators), taking longest list. You might want to input only spectra with same lines because the output must have same columns for all spectra.")
+	end
 	
 	-- Check if defined filename has the longest list of lines
 	if data_filename then
@@ -1415,7 +1423,7 @@ function get_lines_info_filename(data_filename)
 	lines_info_filename = potential_filenames[1]
 	
 	if not lines_info_filename then
-		printe("get_lines_info_filename() | Failed to get lines_info_filename. data_filename: "..tostring(data_filename)..", potential_filenames: "..strTable((potential_filenames))
+		printe("get_lines_info_filename() | Failed to get lines_info_filename. data_filename: "..tostring(data_filename)..", potential_filenames: "..strTable(potential_filenames))
 		stopscript = true
 		return
 	end
@@ -1950,6 +1958,12 @@ end
 function process_spectrum(data_filename, spectrum_index, experiment_check)
 	db("process_spectrum", 2)
 	
+	-- Reset global line variables
+	linked_lines = {}
+	lines_data = {}
+	fitted_lines_params = {}
+	fitted_variables = {}
+	
 	-- Move the view onto the data
 	F:execute("plot @0")
 	
@@ -2189,11 +2203,45 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 		create_line(line_index, minimal_data_value, root_variables, max_height_values)
 	end
 	
+	-- Create variables defined in the links
+	local all_expressions = {}
+	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+		
+		-- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
+		-- Also save parameter link expressions
+		local line_expressions = apply_variable_declarations(line_index)
+		all_expressions = tableMerge(all_expressions, line_expressions)
+	end
+	
+	-- Get the dependencies of lines to link (if left line references right one then right has to be linked first or the first link is broken)
+	local links_dependencies = {} -- Format: tbl[func_param] = {func_param_link1, func_param_link2, ...}
+	for line_name, expr_table in pairs(all_expressions) do
+		
+		-- Get dependencies. If there are no function dependencies then the expression is executed (parameter depends only on variables, not linked to other parameters)
+		local line_dependencies = get_links_dependencies(line_name, expr_table)
+		
+		-- Merge the new dependencies into links_dependencies
+		links_dependencies = tableMerge(links_dependencies, line_dependencies)
+	end
+	
+	-- Sort the dependencies and create a 1D table (ordered list) of the dependencies (dependency is first and the func_param referencing it is after)
+	local sorted_links_dependencies = topological_sort(links_dependencies)
+	
+	-- Create links for the lines that depend on other lines (variables and lines without line dependencies are already applied)
 	-- Iterate over the newly-created lines and create links between them
 	-- Use Linked variables equations defined in Lines_info*.csv
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		apply_linked_variable(line_index, root_variables) -- TODO: use it during line creation (guess constructor)?
+	for idx, func_param in ipairs(sorted_links_dependencies) do
+		
+		-- extract function name and parameter
+		local func_name, param_name = separate_function_parameter(func_param)
+		local line_index = get_line_index_by_name(func_name)
+		
+		-- Apply links only for that function and parameter
+		apply_linked_variable(line_index, root_variables, param_name) -- TODO: use it during line creation (guess constructor)?
 	end
+	
+	-- Delete the variables that aren't used anywhere after linking (just in case if it improves speed)
+	delete_rogue_variables()
 	
 	-- Iterate over the newly-created links and variables and save the info about the links for future use in linked_lines
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
@@ -2488,8 +2536,14 @@ end
 
 -- Return a table of parameter names for the given (existing) function
 function get_parameter_names(function_name)
+	db("get_parameter_names", 4)
+	
 	local param_names = {}
 	local fn = F:get_function(function_name)
+	
+	if not fn then 
+		printe("get_parameter_names() | Function doesn't exist. function_name: "..tostring(function_name))
+	end
 	
 	-- iterate over parameters and save their names
 	local param_nr = 0
@@ -2510,13 +2564,6 @@ function get_variable_type(fn, param_name, line_index)
 	
 	local var_type = {}
 	local orig_variable_name = fn:var_name(param_name)
-	
-	-- One shared parameter for those values
-	--[[
-	if (param_name == "hwhm") or (param_name == "gwidth") or (param_name == "fwhm") then -- TODO: inconsistency between (un)lock and error saving
-		param_name = "width"
-	end
-	--]]
 	
 	-- get the variables this compound variable references
 	local root_var_names_tbl = get_root_parent_variables(orig_variable_name)
@@ -2642,8 +2689,173 @@ function get_functions_from_expression(expression)
 	return gather_matches(expression, "%%([_%w]+%.[_%w]+)") -- %; [extracted] alphanumeric characters and _ (greedy 1 or more), and ., and alphanumeric charactes and _
 end
 
+-- Get ordered list of which lines and parameters to link first in order not to break links later
+function get_links_dependencies(function_name, expr_table)
+	db("get_links_dependencies", 2)
+	
+	-- Iterate over the expressions, parse them
+	local line_dependencies = {}
+	for expr_idx, expression in ipairs(expr_table) do
+		local func_param, expression_dependencies = parse_expression_for_dependencies(expression, function_name)
+		
+		-- Merge the new dependencies into line_dependencies
+		if tableLength(expression_dependencies) > 0 then
+			line_dependencies[func_param] = line_dependencies[func_param] or {}
+			line_dependencies[func_param] = tableConcat(line_dependencies[func_param], expression_dependencies)
+		end
+	end
+	
+	return line_dependencies
+end
+
+-- Sort algorithm from ChatGPT (2025.07.12)
+-- Sorts the dependencies and flattens the array, so that first elements are dependencies of later elements
+function topological_sort(dependency_graph)
+    local sorted = {} -- output
+    local visited = {} -- don't go over same lines
+    local visiting = {} -- what line is under observation
+
+    local function visit(node)
+        if visited[node] then return end -- already checked
+        if visiting[node] then
+            printe("topological_sort() | Cyclic dependency detected and is cut arbitrarily, check links in Lines_info*.csv. Cycle at node: " .. tostring(node))
+			return
+        end
+		
+        visiting[node] = true
+		
+		-- Check if the (referenced) line has references
+        local deps = dependency_graph[node]
+        if deps then
+			
+			-- Iterate over secondary references and do recursion
+            for _, dep in ipairs(deps) do
+                visit(dep)
+            end
+        end
+		
+		-- No more dependencies, save the line
+        visiting[node] = nil
+        visited[node] = true
+        table.insert(sorted, node)
+    end
+	
+	-- Iterate over line names which define expressions
+    for node, _ in pairs(dependency_graph) do
+        visit(node)
+    end
+
+    return sorted
+end
+
+-- Parse the given expression (linked variables) and execute it if no immediate flaws are seen
+function parse_expression_for_dependencies(expression, function_name)
+	db("parse_expression_for_dependencies", 3)
+	
+	local dependency_table = {}
+	
+	-- parameter declaration
+	local declared_parameter_name = string.match(expression, "^([%w]+)%s-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+	local func_param = function_name.."."..declared_parameter_name
+	
+	-- Get a list of referenced functions
+	local func_param_pattern = "%%([_%w]+%.[_%w]+)" -- %; [extracted] alphanumeric characters and _ (greedy 1 or more), ., alphanumeric characters and _ (greedy 1 or more)
+	local referenced_func_params = gather_matches(expression, func_param_pattern) 
+	
+	-- Todo: what if current parameter references a variable and that variable references another parameter?
+	
+	-- If there are no referenced functions then execute the expression immediately (variables are defined in apply_variable_declarations)
+	if tableLength(referenced_func_params) <= 0 then
+		expression = "%"..function_name.."."..expression
+		F:execute(expression)
+	end
+	
+	return func_param, referenced_func_params
+end
+
+-- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
+-- Save return parameter linking expressions
+function apply_variable_declarations(line_index)
+	db("apply_variable_declarations", 2)
+	
+	local expressions = {}
+	local function_name = get_fn_name(line_index)
+	
+	-- Get the string to parse
+	local linked_string = lines_info[lines_info_filename][line_index]["Linked variables"]
+	if not linked_string then return expressions end
+	
+	-- Get expressions to parse
+	local line_expressions = split_string(linked_string, ";")
+	
+	-- Iterate over the expressions, parse them and execute them
+	for idx, expression in ipairs(line_expressions) do
+		parse_var_declaration_expression(expression, function_name, expressions)
+	end
+	
+	return expressions
+end
+
+-- 
+function parse_var_declaration_expression(expression, function_name, expressions)
+	db("parse_var_declaration_expression", 3)
+	
+	-- remove whitespace at the beginning of the string
+	local first_char = string.sub(expression, 1, 1)
+	while (string.match(first_char, "%s")) do -- while whitespace do
+		expression = string.sub(expression, 2) -- remove first character
+		first_char = string.sub(expression, 1, 1)
+	end
+	first_char = string.sub(expression, 1, 1)
+	
+	-- variable declaration
+	local is_var_declaration = (first_char == "$")
+	
+	-- Check if variable is already created, return if yes
+	local declared_var_name = string.match(expression, "^%$([_%w]+)%s-=") -- string start, $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+	
+	if is_var_declaration then
+		local var = F:get_variable(declared_var_name) -- variable object
+		if var then
+			printe("parse_var_declaration_expression() | Variable declaration but variable already exists. Linked variable command under function: "..function_name..", expression: "..expression)
+			return
+		end
+	end
+	
+	-- Get a list of referenced variables
+	local variable_names_table = get_variables_from_expression(expression)
+	
+	-- Iterate over the table and create variables that don't exist
+	for idx, var_name in ipairs(variable_names_table) do
+		if (var_name ~= declared_var_name) then -- don't create the declared variable yet
+			
+			-- check if the variable exists, create it if not
+			local var = F:get_variable(var_name) -- variable object
+			if not var then
+				F:execute("$"..var_name.." = ~1") -- default value 1, simple variable (~)
+			end
+		end
+	end
+	
+	-- Save other expressions
+	if not is_var_declaration then
+		expressions[function_name] = expressions[function_name] or {}
+		table.insert(expressions[function_name], expression)
+		return
+	end
+	
+	-- Execute the expression and catch errors
+	local status, err = pcall(function()
+		F:execute(expression)
+	end)
+	
+	if not status then 
+		printe("parse_var_declaration_expression() | Failed to execute variable declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
+	end
+end
+
 -- Use Linked variables equations defined in Lines_info*.csv
-function apply_linked_variable(line_index, root_variables)
+function apply_linked_variable(line_index, root_variables, check_param_name)
 	db("apply_linked_variable", 2)
 	
 	local function_name = get_fn_name(line_index)
@@ -2657,13 +2869,16 @@ function apply_linked_variable(line_index, root_variables)
 	
 	-- Iterate over the expressions, parse them and execute them
 	for idx, expression in ipairs(expressions) do
-		parse_and_execute_expression(expression, function_name, root_variables, line_index)
+		parse_and_execute_expression(expression, line_index, function_name, root_variables, check_param_name)
 	end
 end
 
 -- Parse the given expression (linked variables) and execute it if no immediate flaws are seen
-function parse_and_execute_expression(expression, function_name, root_variables, line_index)
+-- Returns if check_param_name is defined ant the expression isn't about defining that parameter
+function parse_and_execute_expression(expression, line_index, function_name, root_variables, check_param_name)
 	db("parse_and_execute_expression", 3)
+	
+	if not root_variables[line_index] then return end -- line is dummy -- TODO: revive dummy?
 	
 	-- Get a list of referenced functions and check if they exist, if not then return because expression is invalid
 	-- The current function is newly created, others need to be checked
@@ -2691,8 +2906,10 @@ function parse_and_execute_expression(expression, function_name, root_variables,
 	local is_var_declaration = (first_char == "$")
 	if is_var_declaration then
 		
+		if check_param_name then return end -- variable declaration but parameter mode
+		
 		-- Check if variable is already created
-		declared_var_name = string.match(expression, "^$([_%w]+).-=") -- string start, $, [extracted] alphanumeric characters and _ (greedy 1 or more), any characters (lazy 0 or more), =
+		declared_var_name = string.match(expression, "^$([_%w]+)%s-=") -- string start, $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
 		local var = F:get_variable(declared_var_name) -- variable object
 		if var then
 			printe("parse_and_execute_expression() | Variable declaration but variable already exists. Linked variable command under function: "..function_name..", referenced variable name: "..var_name..", expression: "..expression)
@@ -2702,6 +2919,7 @@ function parse_and_execute_expression(expression, function_name, root_variables,
 		declared_parameter_name = string.match(expression, "^([%w]+).-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any characters (lazy 0 or more), =
 	end
 	
+	if declared_parameter_name ~= check_param_name then return end -- wrong parameter
 	
 	-- Get a list of referenced variables
 	local variable_names_table = get_variables_from_expression(expression)
@@ -2730,41 +2948,28 @@ function parse_and_execute_expression(expression, function_name, root_variables,
 		-- it's parameter declaration, add function name in the beginning and execute
 		expression = "%"..function_name.."."..expression
 		F:execute(expression)
+		
+		-- Modify root_variables to account for the new parameter variable(s)
+		local var_names, var_types = get_link_variable_types(line_index, declared_parameter_name)
+		root_variables[line_index][declared_parameter_name].names = var_names
+		root_variables[line_index][declared_parameter_name].v_types = var_types
 	end)
 	
 	if not status then -- had error
 		printe("parse_and_execute_expression() | Executing the expression raised an error. Linked variable command under function: "..function_name..", expression: "..expression.." , error: "..tostring(err))
 		return
 	end
-	
-	-- Modify root_variables if function parameter is changed
-	if not is_var_declaration then
-		
-		local fn = F:get_function(function_name) -- line function
-		if root_variables[line_index] then -- line isn't dummy
-			for param_name, tbl in pairs(root_variables[line_index]) do -- iterate over parameters of the function
-				
-				-- Save the root variable names and their types for locking/unlocking lines
-				if param_name == declared_parameter_name then
-					
-					-- Save all root variables and their types
-					local var_names, var_types = get_link_variable_types(line_index, param_name)
-					root_variables[line_index][param_name].names = var_names
-					root_variables[line_index][param_name].v_types = var_types
-				end
-			end
-		
-		else -- line is dummy
-			-- TODO: revive dummy?
-		end
-	end
 end
 
 -- Get the type of the variable when creating a link
 function get_link_variable_types(line_index, param_name)
+	db("get_link_variable_types", 5)
+	
 	local var_types = {}
 	
 	-- Get the root variables (simple or constant, not compound)
+	local function_name = get_fn_name(line_index)
+	local fn = F:get_function(function_name) -- line function
 	local variable_name = fn:var_name(param_name)
 	local root_var_names_tbl = get_root_parent_variables(variable_name)
 	
@@ -2795,6 +3000,7 @@ end
 
 -- Check if the parameter's variable is a simple variable or it's a compound variable with only a reference to a simple variable (and no equation) etc.
 function is_linked_simple_variable(variable_name)
+	db("is_linked_simple_variable", 6)
 	
 	-- Check if it's a simple variable
 	local var_obj = F:get_variable(variable_name)
@@ -2813,6 +3019,57 @@ function is_linked_simple_variable(variable_name)
 	return false
 end
 
+-- Delete the variables that aren't used anywhere after linking (just in case if it improves speed)
+-- Recursively check the parent variables
+function delete_rogue_variables()
+	db("delete_rogue_variables", 2)
+	
+	local check_variables = {}
+	
+	-- Iterate over all variables
+	local variables = F:all_variables()
+	for idx = 0, #variables - 1 do
+		local variable_name = variables[idx].name
+		check_variables[variable_name] = true
+	end
+	
+	-- Recursively delete all unused variables and then their unused parents etc.
+	delete_rogue_variables_recursive(check_variables, {})
+end
+
+-- Recursively check if the variables and their parents are used by something, delete if not
+function delete_rogue_variables_recursive(check_variables, checked_variables)
+	local check_parents = {}
+	
+	-- Iterate over variables
+	for variable_name, _ in pairs(check_variables) do
+		
+		if not checked_variables[variable_name] then -- prevent loops
+			checked_variables[variable_name] = true
+			
+			-- Check if the variable is used anywhere
+			local child_vars = get_child_variables(variable_name)
+			local child_fns = get_child_functions(variable_name)
+			
+			-- Exterminate and check parents if nothing depends on it
+			if (tableLength(child_vars) <= 0) and (tableLength(child_fns) <= 0) then
+				local parents = get_parent_variables(variable_name)
+				
+				-- Save into a different table to avoid duplicates
+				for idx2, parent in ipairs(parents) do
+					check_parents[parent] = true
+				end
+				
+				F:execute("delete $"..variable_name)
+			end
+		end
+	end
+	
+	-- Do the recursion with parents
+	if (tableLength(check_parents) > 0) then
+		delete_rogue_variables_recursive(check_parents, checked_variables)
+	end
+end
 
 -- Save the info about which lines and parameters are linked into linked_lines table.
 -- Each line that is linked to another is referenced in linked_lines. The references are two-way, so there is duplicate info.
@@ -2919,10 +3176,9 @@ end
 function get_parameter_type(line_index, parameter_name, root_variables, linked_table)
 	if not root_variables[line_index] then return "locked" end -- dummy
 	
-	if not lines_info[lines_info_filename][line_index]["Linked lines"] then return "normal" end -- no links defined
+	--if not lines_info[lines_info_filename][line_index]["Linked lines"] then return "normal" end -- no links defined
 	
 	local function_name = get_fn_name(line_index)
-	if linked_table and (not linked_table[function_name]) then return "normal" end -- no links defined by user
 	--if linked_table and linked_table[function_name] and (not linked_table[function_name][parameter_name]) then return "normal" end -- no links defined for the parameter, but could be locked
 	if linked_table and linked_table[function_name] and linked_table[function_name][parameter_name] then return "linked" end -- links to other lines/parameters defined for the parameter
 	
@@ -2935,7 +3191,7 @@ function get_parameter_type(line_index, parameter_name, root_variables, linked_t
 		if var_type == "linked_simple" then return "linked_simple" end -- Linked_simple if any is Linked_simple -- TODO: check, if any is Linked_simple then all should be Linked_simple or I made a mistake
 		if var_type == "compound" then return "compound" end -- Compound if any is compound
 		
-		is_locked = is_locked and var_type == "locked" -- Locked if all are locked
+		is_locked = is_locked and (var_type == "locked") -- Locked if all are locked
 	end
 	if is_locked then return "locked" end
 	
@@ -3013,7 +3269,7 @@ end
 -- Lock the parameters of a line
 function lock_parameters_simple(line_index)
 	
-	-- Iterate over root variables of the line parameters
+	-- Iterate over line parameters
 	for param_name, tbl in pairs(lines_data[line_index].parameters) do
 		local var_names = lines_data[line_index]["parameters"][param_name].root_vars.names
 		
@@ -3026,13 +3282,24 @@ end
 
 -- Fits the current line along with any lines linked to it
 -- Process only a part of spectrum at a time. Get first line (sorted by wavelength) and fit only that and lines that are in its influence diameter.
--- Also unlock other linked lines -- TODO: check if it's better to unlock all lines in the influence diameter of the latter?
+-- Also unlock other linked lines and a smaller diameter around them.
 function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_data_value, max_height_values)
 	db("fit_one_line", 2)
+	
 	
 	-- Get range in which other (normal) lines influence the current line
 	local second_order_multiplier = 1.5
 	local beginning, ending = get_influence_diameter(main_line_index, second_order_multiplier)
+	
+	
+	-- TODO: prevent crash if user defines lines far outside the range, so that no datapoints are active
+	-- Incorrect range, no points active
+	--[[
+	if (beginning >= endpoint) or (ending <= startpoint) then
+		turn_into_dummy(main_line_index)
+		return
+	end
+	--]]
 	
 	-- Activate dataset points in the influence diameter (plus extra) of the main line
 	select_active_points(beginning, ending)
@@ -3064,10 +3331,12 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	-- dummy function, don't fit lines, but fit the local constant
 	local is_dummy = lines_data[main_line_index].type == "dummy"
 	
-	local lines_params_table
+	local main_window_lines, secondary_window_lines
 	if not is_dummy then 
-		local main_window_lines = gather_lines_main(main_line_index) -- tbl[func_name][param_name][func_param_linked] = true
-		local directly_linked_lines_list = gather_linked_lines(main_line_index) -- tbl[func_name] = line_idx
+		main_window_lines = gather_lines_main(main_line_index) -- Format: tbl[func_name][param_name] = true
+		local directly_linked_lines_list = gather_linked_lines(main_line_index) -- Format: tbl[func_name] = line_idx
+		
+		-- TODO: what if another parameter of the secondary linked line is linked to a third line?
 		
 		-- Activate datapoints for each linked line window
 		for func_name, line_idx in pairs(directly_linked_lines_list) do
@@ -3081,31 +3350,18 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 		end
 		
 		-- Iterate over linked lines and get the lines of those windows (narrower than main window)
-		local secondary_window_lines = gather_secondary_lines(directly_linked_lines_list)
-		
-		
-		-- TODO: remove duplicates
-		
-		
-		-- Iterate over secondary window lines and lock the parameters without saving the errors
-		for do -- TODO
-			lock_parameters_simple(main_line_index)
-		end
-		
-		
-		
+		secondary_windows_lines = gather_secondary_lines(directly_linked_lines_list) -- Format: tbl[func_name][param_name] = true
 		
 		-- Get all the lines and parameters associated with the current one (nearby and linked)
-		lines_params_table = gather_lines_to_activate(main_line_index)
+		local lines_params_table = tableMerge(shallowCopy(main_window_lines), secondary_windows_lines) -- Format: tbl[func_name][param_name] = true
 		
-		-- TODO: activate some other lines near linked line?
+		-- TODO: unlock lines very close to the main line (diameter * 0.25?) and unlock lines linked to those (don't save vars for those)
+		-- TODO: unlock tertiary linked lines (main is linked to line2 and line2 is linked to line3 but main isn't directly linked to line3)?
 		
-		-- Unlock the variables of those lines or create new ones if they don't exist
+		-- Unlock the variables of those lines
 		-- Writes into max_height_values tables
 		activate_lines(lines_params_table, minimal_data_value, max_height_values)
-	
-		
-	end 
+	end
 	
 	
 	-- fit 2x to avoid local minima, catch error in case only dummies are to be fitted
@@ -3113,6 +3369,13 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 		--F:execute("@0: fit")
 		F:execute("@0: fit")
 	end)
+	
+	-- Stop for debugging
+	if stop_after_fit_window and (F:input("Stop at line index "..main_line_index.." after fitting? [y/n]")  == 'y') then
+		print("Stopping the script because of your input")
+		stopscript = true
+		return
+	end
 	
 	----------------------------------------------------------
 	-- Calculate value and error of the local constant
@@ -3140,8 +3403,21 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 		-- Check the current line area. If not according to requirements (stronger than noise) the line height is written as 0.
 		--remove_invalid_line(main_line_index, root_variables, noise_stdev)
 		
-		-- Lock the variables of those lines
-		lock_lines(main_line_index, lines_params_table)
+		-- Lock the variables of main lines
+		lock_lines(main_line_index, main_window_lines)
+		
+		-- Iterate over secondary window lines and lock the parameters without saving the errors
+		for line_name, tbl in pairs(secondary_windows_lines) do
+			local line_index = get_line_index_by_name(line_name)
+			lock_parameters_simple(line_index)
+		end
+	end
+	
+	-- Stop for debugging
+	if stop_after_lock_lines and (F:input("Stop at line index "..main_line_index.." after locking? [y/n]")  == 'y') then
+		print("Stopping the script because of your input")
+		stopscript = true
+		return
 	end
 end
 
@@ -3154,9 +3430,9 @@ function get_influence_diameter(line_index, second_order_multiplier)
 	local line_position = info["Wavelength (m)"]
 	
 	--second_order_multiplier = 1.5 -- multiply influence diameter because influencing line might be influenced by another further away
-	local beginning = line_position - max_line_influence_diameter * second_order_multiplier
-	local ending = line_position + max_line_influence_diameter * second_order_multiplier
-	if forbid_lines_outside_range then
+	local beginning = line_position - default_max_line_influence_radius * second_order_multiplier
+	local ending = line_position + default_max_line_influence_radius * second_order_multiplier
+	if forbid_lines_outside_range then -- TODO: check new code if always have to forbid
 		beginning = clip(beginning, cut_start, cut_end)
 		ending = clip(ending, cut_start, cut_end)
 	end
@@ -3169,65 +3445,33 @@ end
 
 -- Return a table of lines and parameters that need to be activated for the fitting of the main line. This means lines in its influence range and
 -- linked lines with some others closer to the linked line. Don't return lines which have all of their parameters fitted before due to links.
-function gather_lines_to_activate(line_index)
+function gather_lines_to_activate(main_line_index, main_window_lines, secondary_window_lines)
 	db("gather_lines_to_activate", 3)
 	
-	local lines_params_table = {}
+	-- main_window_lines format: tbl[func_name][param_name] = true
+	-- secondary_window_lines format: tbl[line_index] = true
 	
-	local info = lines_info[lines_info_filename][line_index]
-	local main_line_position = info["Wavelength (m)"]
+	local lines_params_table = shallowCopy(main_window_lines)
 	
-	-- Get range in which lines influence the main line
-	local second_order_multiplier = 1.5
-	local beginning, ending = get_influence_diameter(line_index, second_order_multiplier)
-	
-	-- Gather ordinary lines in main line influence range
-	local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], main_line_position, ending) -- use only the current line and lines to the right because others are already fitted and locked
-	for line_idx, bool in pairs(influenced_line_indices) do
-		local function_name = lines_data[line_idx].name
-		lines_params_table[function_name] = {}
+	-- Iterate over lines in secondary windows
+	for line_index, bool in secondary_window_lines do
 		
-		-- Get the parameter names of the function and add them to the table
-		local param_names = get_parameter_names(function_name)
-		for idx, param_name in ipairs(param_names) do
-			lines_params_table[function_name][param_name] = true
-		end
-	end
-	
-	-- TODO: exclude linked lines if all their linked parameters have already been fitted
-	
-	-- Gather linked lines
-	local original_function_name = lines_data[line_index].name
-	if linked_lines[original_function_name] then -- there are links
+		-- Iterate over parameters
+		local function_name = lines_data[line_index].name
 		
-		-- Iterate over linked parameters of the main line
-		for param_name, links_tbl in pairs(linked_lines[original_function_name]) do
+		-- Iterate over parameters
+		for parameter, tbl in pairs(lines_data[line_index].parameters) do
 			
-			-- Iterate over other lines that are linked to the main line
-			for func_param, bool in pairs(links_tbl) do
-				
-				-- Gather the linked lines
-				-- Gather the lines close to the linked lines
-				-- Remove the parameters which have already been fitted
-				-- Ignore saving errors on secondary lines
-				
-				-- extract function name and parameter
-				local func_name, param_name = separate_function_parameter(func_param)
-				
-				-- Save into lines_params_table
-				lines_params_table[func_name] = lines_params_table[func_name] or {}
-				lines_params_table[func_name][param_name] = true
-			end
+			-- Merge tables
+			lines_params_table[function_name][parameter] = true
 		end
 	end
-	
-	-- TODO: remove duplicates
 	
 	return lines_params_table
 end
 
 -- Gather lines within the influence range of the main line
--- Format: tbl[func_name][param_name][func_param_linked] = true
+-- Format: tbl[func_name][param_name] = true
 function gather_lines_main(line_index)
 	db("gather_lines_main", 3)
 	
@@ -3287,6 +3531,7 @@ function gather_linked_lines(line_index)
 end
 
 -- Gather lines that are in the secondary active windows of lines linked to the main one
+-- Format: tbl[func_name][param_name] = true
 function gather_secondary_lines(linked_lines_list)
 	db("gather_secondary_lines", 3)
 	
@@ -3294,49 +3539,46 @@ function gather_secondary_lines(linked_lines_list)
 	
 	-- Iterate over linked lines and get the tertiary lines of the linked lines windows
 	for func_name, line_idx in pairs(linked_lines_list) do
-		--lines_params_table[func_name] = line_idx
 		
-		-- Get range in which lines influence the current line
-		local second_order_multiplier = 0.5
-		local beginning, ending = get_influence_diameter(line_idx, second_order_multiplier)
-		
-		-- Gather lines in secondary line influence range
-		local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], beginning, ending)
-		lines_params_table =  tableMerge(lines_params_table, influenced_line_indices)
-	end
-	
-	
-	
-	
-	-- Remove the parameters which have already been fitted
-	-- Ignore saving errors on secondary lines
-	
-	-- Iterate over linked parameters of the main line
-	for main_param_name, links_tbl in pairs(linked_lines[original_function_name]) do
-		
-		-- Iterate over other lines that are linked to the main line
-		for func_param, bool in pairs(links_tbl) do
+		-- Ignore linked lines which have had all of its parameters fitted already
+		if not is_all_params_fitted(line_idx) then
 			
-			-- TODO: 
+			-- Get range in which lines influence the current line
+			local second_order_multiplier = 0.5
+			local beginning, ending = get_influence_diameter(line_idx, second_order_multiplier)
 			
-			-- Extract function name and parameter
-			local func_name, param_name = separate_function_parameter(func_param)
+			-- Gather lines in secondary line influence range
+			local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], beginning, ending) -- Format: tbl[line_index] = true
 			
-			
-			
-			
-			-- Save into lines_params_table
-			lines_params_table[func_name] = lines_params_table[func_name] or {}
-			lines_params_table[func_name][param_name] = true
+			-- Iterate over the lines in the secondary window
+			for line_index, bool in pairs(influenced_line_indices) do
+				
+				local line_name = lines_data[line_index].name
+				lines_params_table[line_name] = lines_params_table[line_name] or {}
+				
+				-- Iterate over parameters for that line and save the line-parameter combo (convert format for line activation and locking)
+				for parameter, tbl in pairs(lines_data[line_index].parameters) do
+					lines_params_table[line_name][parameter] = true
+				end
+			end
 		end
 	end
-	
-	-- TODO: exclude linked lines if all their linked parameters have already been fitted
-	
 	
 	return lines_params_table
 end
 
+-- Check if all parameters of a line have been fitted and therefore if the line is fitted
+function is_all_params_fitted(line_index)
+	local all_params_fitted = true
+	local line_name = lines_data[line_index].name
+	
+	-- Iterate over parameters for that line and save the line-parameter combo
+	for parameter, tbl in pairs(lines_data[line_index].parameters) do
+		all_params_fitted = all_params_fitted and fitted_lines_params[line_name] and fitted_lines_params[line_name][parameter] and true
+	end
+	
+	return all_params_fitted
+end
 
 -- return the index of a line with the given name
 function get_line_index_by_name(function_name)
@@ -3360,17 +3602,16 @@ function activate_lines(lines_params_table, minimal_data_value, max_height_value
 			
 			local line_index = get_line_index_by_name(function_name)
 			local is_dummy = lines_data[line_index].type == "dummy"
-			if not is_dummy then -- proper line
+			if is_dummy then -- is dummy but might be only because of last pixel range, try to fit again
 				
+				-- TODO: revive dummy if dummy is created with different conditions (not below noise level)
+				-- Only check dummies on the right side of the active range
+			
+			else -- proper line
 				-- Iterate over parameters to unlock and unlock them
 				for parameter, bool in pairs(parameters) do
 					unlock_parameter(line_index, parameter)
 				end
-			
-			-- is dummy but might be only because of last pixel range, try to fit again
-			else
-				-- TODO: revive dummy if dummy is created with different conditions (not below noise level)
-				-- Only check dummies on the right side of the active range
 			end
 		
 		else
@@ -3428,95 +3669,95 @@ end
 function lock_parameter(main_line_index, function_name, line_index, param_name)
 	db("lock_parameter", 4)
 	
-	if fitted_lines_params[function_name][param_name] then return end -- the parameter of the line has been finalized
+	if fitted_lines_params[function_name] and fitted_lines_params[function_name][param_name] then return end -- the parameter of the line has been finalized
 	
 	local var_names = lines_data[line_index]["parameters"][param_name].root_vars.names
 	local var_types = lines_data[line_index]["parameters"][param_name].root_vars.v_types
 	
 	-- iterate over root variable names
 	for var_index, root_var_name in ipairs(var_names) do
-		lock_variable(main_line_index, function_name, line_index, param_name, var_types, var_index, root_var_name)
+		lock_variable_save_errors(main_line_index, function_name, line_index, param_name, var_types, var_index, root_var_name)
+	end
+	
+	-- If all root variables of the parameter have been fitted then the parameter is fitted too
+	if (line_index == main_line_index) then
+		check_all_root_vars_fitted(main_line_index, param_name)
 	end
 end
 
 
--- Lock the variable and register fitted lines and parameters
-function lock_variable(main_line_index, function_name, line_index, param_name, var_types, var_index, root_var_name)
-	db("lock_variable", 5)
+-- Lock the variable, save the error and register fitted lines and parameters
+function lock_variable_save_errors(main_line_index, function_name, line_index, param_name, var_types, var_index, root_var_name)
+	db("lock_variable_save_errors", 5)
 	
 	if fitted_variables[root_var_name] then return end -- variable has been fitted and finalized
-		
-	local var_type
-	if type(var_types) == "table" then var_type = var_types[var_index]
-	else var_type = var_types end
 	
-	local var_obj = F:get_variable(root_var_name)
-	
-	-- Save the error even if it's not the main line because linked variable loses its error after first locking
-	local error_value
-	if (var_type == "linked_simple") or (var_type == "linked") then -- linked and not fitted previously -- TODO: avoid overwriting with nil when other TODO is done
-		
-		-- Register that the root variable has been fitted
-		fitted_variables[root_var_name] = true
-		
-		if var_obj:is_simple() then -- can extract error
-			error_value = F:calculate_expr("$" ..root_var_name..".error")
-			-- TODO: save the error under other linked lines too (ignore if fitted_variables[root_var_name])
-		else 
-			error_value = nil
-		end
-		
-		-- Use the variable index for the line (might not be the main line, so table.insert() doesn't work)
-		lines_data[line_index]["parameters"][param_name]["root_vars"]["errors"][var_index] = error_value
-		
-		-- If it's the main line then register all parameters as fitted
-		fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
-		if (main_line_index == line_index) then
-			for parameter_name, tbl in pairs(lines_data[line_index].parameters) do
-				fitted_lines_params[function_name][parameter_name] = true
-			end
-		
-		-- Not main line, register only the linked parameters
-		else
-			-- If all root variables of the parameter have been fitted then the parameter is fitted too
-			check_all_root_vars_fitted(line_index, param_name)
-		end
-	
-	-- Save the errors for the main line (unless it's a linked variable that was locked/saved before)
-	elseif (main_line_index == line_index) then
-		
-		-- Register that the root variable has been fitted
-		fitted_variables[root_var_name] = true
-		
-		-- Register that this line and its parameters have been fitted
-		fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
-		for parameter_name, tbl in pairs(lines_data[line_index].parameters) do
-			fitted_lines_params[function_name][parameter_name] = true
-		end
-		
-		if (var_type == "locked") then
-			error_value = 0
-		
-		elseif (var_type == "compound") or fitted_variables[root_var_name] then -- TODO: delete for fitted after errors are saved to others too
-			error_value = nil
-		
-		elseif (var_type == "simple") or (var_type == "linked_simple") or ((var_type == "linked") and var_obj:is_simple()) then -- can extract error
-			error_value = F:calculate_expr("$" ..root_var_name..".error")
-			-- TODO: save the error under other linked lines too (ignore if fitted_variables[root_var_name])
-		
-		else -- e.g. linked but not simple
-			error_value = nil
-		end
-		
-		lines_data[line_index]["parameters"][param_name]["root_vars"]["errors"][var_index] = error_value
+	-- If it's a random line then simply lock the variable
+	if (main_line_index ~= line_index) then
+		F:execute("$" ..root_var_name.. " = {$" ..root_var_name.. "}") -- Lock the variable
+		return
 	end
+	
+	local var_type = var_types
+	if type(var_types) == "table" then var_type = var_types[var_index] end
 	
 	if (var_type == "compound") then
 		printe("lock_lines() | Locking compound variable: " .. root_var_name)
 	end
 	
-	-- Lock the variable.
+	local var_obj = F:get_variable(root_var_name)
+	
+	-- Linked variable loses its error after first locking but correctly fitted line is always the leftmost linked line which is always the main line
+	
+	-- Get the variable error
+	local error_value
+	if (var_type == "locked") then
+		error_value = 0
+	
+	elseif var_obj:is_simple() then -- can extract error (simple or linked simple)
+		error_value = F:calculate_expr("$" ..root_var_name..".error")
+	
+	else -- e.g. compound or linked but not simple
+		error_value = nil
+	end
+	
+	-- Save the variable error under all lines that use it
+	if (var_type == "linked_simple") or (var_type == "linked") then -- linked and not fitted previously
+		
+		-- Save the error under all linked lines that use the variable
+		save_error_for_variable(root_var_name, error_value)
+	
+	-- Save the errors for the main line
+	else
+		lines_data[line_index]["parameters"][param_name]["root_vars"]["errors"][var_index] = error_value
+	end
+	
+	-- Register that the root variable has been fitted
+	fitted_variables[root_var_name] = true
+	
+	-- Register that this line and the parameter has been fitted
+	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
+	fitted_lines_params[function_name][param_name] = true
+	
+	-- Lock the variable
 	F:execute("$" ..root_var_name.. " = {$" ..root_var_name.. "}")
+end
+
+-- Save the error value in the error table under each line and parameter that uses it in lines_data
+function save_error_for_variable(root_var_name, error_value)
+	
+	-- Get lines that use the variable
+	for line_index, tbl in pairs(lines_data) do -- Iterate over line indices
+		for param_name, tbl2 in pairs(tbl.parameters) do -- Iterate over parameters
+			for var_idx, var_name in ipairs(tbl2.root_vars.names) do -- iterate over root variable names
+				
+				-- Save the error if it's the same variable
+				if var_name == root_var_name then
+					tbl2["root_vars"]["errors"][var_idx] = error_value
+				end
+			end
+		end
+	end
 end
 
 -- Check if all root variables of a parameter have been fitted and therefore if the line is fitted
@@ -3639,31 +3880,42 @@ function create_dummy_function(line_index)
 	-- Get function name
 	local function_name = get_fn_name(line_index)
 	
-	-- Register its parameters as fitted
-	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
-	for parameter_name, tbl in pairs(lines_data[line_index].parameters) do
-		fitted_lines_params[function_name][parameter_name] = true
-	end
-	
 	--local sig_numbers = 6
 	--local pos_name = decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
 	
 	
 	-- gwidth, shape and fwhm might cause trouble if they're 0
+	local parameter_names = {"height", "center"}
 	if function_type == "Voigt" then -- Voigt
 		F:execute("%" .. function_name .. " = Voigt(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
+		table.insert(parameter_names, "gwidth")
+		table.insert(parameter_names, "shape")
+	
 	elseif function_type == "VoigtFWHM" then -- FWHM defined Voigt
 		F:execute("%" .. function_name .. " = VoigtFWHM(center = "..tostring(line_position)..", height = 0, fwhm = 1, shape = 1)")
+		table.insert(parameter_names, "fwhm")
+		table.insert(parameter_names, "shape")
+	
 	elseif function_type == "VoigtApparatus" then -- Apparatus fn defined Voigt
 		F:execute("%" .. function_name .. " = VoigtApparatus(center = "..tostring(line_position)..", height = 0, gwidth = 1, shape = 1)")
+		table.insert(parameter_names, "gwidth")
+		table.insert(parameter_names, "shape")
+	
 	else -- Gaussian and Lorentzian have same variables
 		F:execute("%" .. function_name .. " = Gaussian(center = "..tostring(line_position)..", height = 0, hwhm = 1)")
+		table.insert(parameter_names, "hwhm")
+	end
+	
+	-- Register its parameters as fitted
+	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
+	for idx, parameter_name in ipairs(parameter_names) do
+		fitted_lines_params[function_name][parameter_name] = true
 	end
 	
 	-- if line is guessed without any active datapoints then there's error 
 	-- guess: empty range
 	-- File not loaded or all points inactive.
-	-- Instead I create a line and add it to F functions
+	-- Instead create a line and add it to F functions
 	F:execute("F += %" ..function_name)
 end
 
@@ -3820,7 +4072,7 @@ function unlock_parameter(line_index, parameter_name)
 	
 	-- The parameter has already been fitted and finalized
 	local function_name = lines_data[line_index].name
-	if fitted_lines_params[function_name][parameter_name] then return end
+	if fitted_lines_params[function_name] and fitted_lines_params[function_name][parameter_name] then return end
 	
 	-- Get associated root parent variable names and types
 	local variable_names = lines_data[line_index]["parameters"][parameter_name].root_vars.names
@@ -3833,7 +4085,7 @@ function unlock_parameter(line_index, parameter_name)
 		else variable_type = var_types end
 		
 		-- Check if the variable has been fitted and finalized
-		if not fitted_variables[root_var_name] then
+		if not fitted_variables[variable_name] then
 			
 			-- Unlock the parameter with its value
 			if (variable_type == "simple") or (variable_type == "linked_simple") or (variable_type == "linked") then
@@ -3863,7 +4115,7 @@ function turn_into_dummy(line_index)
 	
 	-- Iterate over parameters
 	for param_name, tbl in pairs(lines_data[line_index].parameters) do
-		local direct_var_name = "$" .. fn:var_name(param_name)
+		local direct_var_name = fn:var_name(param_name)
 		
 		-- Register all parameters as fitted
 		fitted_lines_params[function_name][param_name] = true
@@ -3880,7 +4132,7 @@ function turn_into_dummy(line_index)
 		
 		-- Write height as 0
 		if param_name == "height" then
-			F:execute(direct_var_name .. " = 0")
+			F:execute("$"..direct_var_name.." = 0")
 		end
 	end
 	
@@ -3975,28 +4227,38 @@ function get_line_errors(line_index, errors, max_height_values, angle_errors)
 	for parameter_name, tbl in pairs(lines_data[line_index].parameters) do
 		local parameter_type = tbl.type
 		
+		local error_value
 		if (parameter_type == "compound") or (parameter_type == "linked") or ((parameter_name == "height") and (height >= max_h)) then -- if (height >= max_h) then min function selected max_height_value or the line is non-existent
-			errors[parameter_name][line_index] = nil -- undefined error
+			error_value = nil -- undefined error
 		
 		elseif (parameter_type == "locked") then
-			errors[parameter_name][line_index] = 0 -- no error
+			error_value = 0 -- no error
 		
 		elseif (parameter_type == "linked_simple") then
 			local var_index = 1
-			errors[parameter_name][line_index] = lines_data[line_index]["parameters"][parameter_name]["root_vars"]["errors"][var_index] -- direct error
+			error_value = lines_data[line_index]["parameters"][parameter_name]["root_vars"]["errors"][var_index] -- direct error
 		
 		elseif (parameter_type == "normal") then
-			calculate_normal_error_derivative(line_index, parameter_name, errors, max_height_values) -- calculated complex error (default)
+			error_value = calculate_normal_error_derivative(line_index, parameter_name, max_height_values) -- calculated complex error (default)
 		
 		else
 			printe("get_line_errors() | Parameter type is unconventional. parameter_type: "..tostring(parameter_type).."line_index: "..tostring(line_index))
 		end
+		
+		-- Some lines use fwhm, some hwhm, ouptput only hwhm because they're directly correlated
+		if parameter_name == "fwhm" then
+			parameter_name = "hwhm"
+			error_value = error_value and error_value / 2
+		end
+		
+		-- Save the error value
+		errors[parameter_name][line_index] = error_value
 	end
 	
 	return errors
 end
 
-function calculate_normal_error_derivative(line_index, parameter_name, errors, max_height_values)
+function calculate_normal_error_derivative(line_index, parameter_name, max_height_values)
 	db("calculate_normal_error_derivative", 3)
 	
 	local function_name = lines_data[line_index].name
@@ -4118,8 +4380,7 @@ function calculate_normal_error_derivative(line_index, parameter_name, errors, m
 	
 	end
 	
-	-- Save the calculated error
-	errors[parameter_name][line_index] = error_value
+	return error_value
 end
 
 
@@ -4131,7 +4392,12 @@ function write_output(data_filename, spectrum_index, errors)
 	-- Initialize the output file
 	if not output_initialized then
 		output_initialized = true
-		init_output() -- write column headers
+		
+		-- Copy user_constants.lua to the output (increment index if already exists)
+		save_user_constants()
+		
+		-- Write column headers
+		init_output()
 	end
 	
 	local file = io.open(output_path..output_data_name_nr,"a")
@@ -4201,7 +4467,7 @@ function write_output(data_filename, spectrum_index, errors)
 			GFWHM = functions[line_index]:get_param_value("GaussianFWHM")
 			LFWHM = functions[line_index]:get_param_value("LorentzianFWHM")
 		elseif function_type == "VoigtFWHM" then -- VoigtFWHM
-			gwidth = math.abs(functions[line_index]:get_param_value("fwhm")) -- TODO: separate this into fwhm output field
+			hwhm = math.abs(functions[line_index]:get_param_value("fwhm")) / 2 -- saves space and user happiness (output format doesn't change)
 			shape = math.abs(functions[line_index]:get_param_value("shape"))
 		elseif function_type == "VoigtApparatus" then -- VoigtApparatus
 			gwidth = math.abs(functions[line_index]:get_param_value("gwidth"))
@@ -4490,7 +4756,7 @@ end
 -- Generate a polyline to simulate the fitted local constants. 
 -- This manipulation is done here instead of adding rectangle functions
 -- during data fitting because that could increase fitting time.
-function create_polyline_local_constant(polyline_values)
+function create_polyline_local_constant(polyline_values) -- TODO: polyline fitting and locking/unlocking instead of local constant
 	
 	-- Add a polyline (local constants) to raise the line functions back to original height. Alternative
 	-- is to use Rectangle functions.
@@ -4501,7 +4767,7 @@ function create_polyline_local_constant(polyline_values)
 	table.sort(polyline_values, compare_start)
 	
 	-- Construct polyline string
-	--local narrower_step = max_line_influence_diameter / narrower_polyline_step -- many lines region overpopulates the polyline
+	--local narrower_step = default_max_line_influence_radius / narrower_polyline_step -- many lines region overpopulates the polyline
 	for idx, value_tbl in ipairs(polyline_values) do
 		
 		-- Get the bondaries of previous and next steps
@@ -4579,7 +4845,7 @@ end
 
 -- Concatenate two tables
 function tableConcat(t1, t2)
-    for i=1,tableLength(t2) do
+    for i=1, tableLength(t2) do
         t1[tableLength(t1) + 1] = t2[i]
     end
     return t1
@@ -4591,6 +4857,18 @@ function tableMerge(t1, t2)
         t1[key] = value
     end
     return t1
+end
+
+-- Do a shallow copy of the object
+function shallowCopy(obj)
+	local copy = obj
+	if type(obj) == "table" then
+		copy = {}
+		for key, value in pairs(obj) do
+			copy[key] = value
+		end
+	end
+	return copy
 end
 
 -- Clip variable between two values
@@ -4677,6 +4955,17 @@ end
 -- Get all matches of the pattern in the string and return the results in a table
 -- It doesn't check the same character twice, so the matches don't overlap in the string.
 function gather_matches(str, pattern)
+	local match_table = {}
+	for result in string.gmatch(str, pattern) do
+		table.insert(match_table, result)
+	end
+	return match_table
+end
+
+-- Get all matches of the pattern in the string and return the results in a table
+-- It doesn't check the same character twice, so the matches don't overlap in the string.
+-- This function expects a pattern that extracts two values
+function gather_matches_2(str, pattern)
 	local match_table = {}
 	for result in string.gmatch(str, pattern) do
 		table.insert(match_table, result)

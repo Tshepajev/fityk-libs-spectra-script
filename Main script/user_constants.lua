@@ -1,3 +1,5 @@
+-- Last update is for script v4.1
+
 -- This is the configuration file for analyze_and_plot.lua script for Fityk.
 -- It's a separate LUA script that will read as global constants defined by user.
 -- It's advisable to save the file with the output for reproducibility.
@@ -6,6 +8,7 @@
 -- User constants (global constants)
 -- Constants, change them! The constants need to be global for Fityk to access them because it seems that Fityk runs the script
 -- line by line. After every line Fityk forgets local LUA variables so they can't be passed to functions.
+-- All values are by default in SI.
 
 ----------------------------------------------------------------------
 -- Path and file settings
@@ -25,6 +28,7 @@ sessions_path = output_path .. "Sessions/" -- sessions after fitting are saved h
 -- Change this if you want to use multiple instances of Fityk calculating
 -- simultaneously using different inputs / different ranges. 
 -- MAKE SURE THERE AREN'T ERRORS IN THE INPUT DATA
+-- 80 % of errors are because of bad input files, 15 % from bad variables in these settings
 
 
 output_data_name = "Fityk_output"
@@ -37,7 +41,7 @@ stopscript_name = "Stopscript.txt"
 
 
 -- What type of data files do you want to input? If eg .asc is already in info file filenames then write "".
--- Regex will use this in search and will consider . symbol.
+-- Regex will use this in search and will consider . symbol. Don't use other special regex symbols!
 file_end = ".txt"
 
 
@@ -194,7 +198,7 @@ apparatus_fn_fwhm = 0.044e-9
 -- If it's constant then just return a constant value or variable instead of the equation.
 apparatus_function_fwhm = function(wavelength)
 	-- Write your function here!
-	return 114286 * wavelength + 0.0014
+	return 1.142857E-04 * wavelength + 1.428571E-12
 end
 
 -- What is the minimal line gwidth? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
@@ -214,7 +218,8 @@ end
 
 -- Estimate for how wide a line can be to still influence the fitting of other points considerably. 
 -- This is used to lock/unlock lines when processing only a part of the spectrum at a time.
-max_line_influence_diameter = 3.5e-9
+-- It should be as small as possible to avoid long fitting times
+default_max_line_influence_radius = 1e-9
 
 
 -- What percentile of active data (intensities) is considered as the higher bound for constants? This applies currently only for
@@ -284,6 +289,12 @@ noise_level_check_multiplier = 2
 -- the index of a pixel that is signal for sensitivity value finding
 --non_noise_sensitivity_px = 500 
 
+-- Polyline gets it's step locations from the edges of the local window with default_max_line_influence_radius 
+-- size. However, when lines are close then polyline coordinates overlap and the polyline steps aren't 
+-- centered around the lines. The step widths are divided with narrower_polyline_step.
+--narrower_polyline_step = 3
+
+
 
 ----------------------------------------------------------------------
 -- Output settings
@@ -295,11 +306,6 @@ only_correct_spectra = false
 
 -- Save the session after fitting in case there's bad fit
 save_sessions = true
-
--- Polyline gets it's step locations from the edges of the local window with max_line_influence_diameter 
--- size. However, when lines are close then polyline coordinates overlap and the polyline steps aren't 
--- centered around the lines. The step widths are divided with narrower_polyline_step.
-narrower_polyline_step = 3
 
 
 -- To plot or not to plot [true/false]?
@@ -326,8 +332,20 @@ debug_mode = -1
 
 
 -- Do you want to stop for query for continuing after every file? [true/false]
-stop = false
+stop_after_file = false
 
 
--- Whether to stop the script before lines are added.
+-- Whether to stop the script after data correction and before lines are added. [true/false]
 stop_before_lines = false
+
+
+-- Whether to stop the script after lines are created and before fitting. [true/false]
+stop_before_fitting = false
+
+
+-- Do you want to stop for query for continuing after every fitting window? [true/false]
+stop_after_fit_window = false
+
+
+-- Do you want to stop for query for continuing after every time lines are locked after fitting? [true/false]
+stop_after_lock_lines = false
