@@ -1,4 +1,4 @@
--- Last update is for script v4.1
+-- Last update is for script v4.2
 
 -- This is the configuration file for analyze_and_plot.lua script for Fityk.
 -- It's a separate LUA script that will read as global constants defined by user.
@@ -219,7 +219,10 @@ end
 -- Estimate for how wide a line can be to still influence the fitting of other points considerably. 
 -- This is used to lock/unlock lines when processing only a part of the spectrum at a time.
 -- It should be as small as possible to avoid long fitting times
-default_max_line_influence_radius = 1e-9
+-- Minimal real influence is 4 * FWHM for the Lorentzian (height is 1-2% of max) but also depends on nearby lines.
+-- If a nearby line is of same width then real influence would be 8 * FWHM.
+-- If a nearby line is wider then the influence radius should be wider respectively, to contain the center of the other line.
+default_max_line_influence_radius = 1e-9 -- 1 nm
 
 
 -- What percentile of active data (intensities) is considered as the higher bound for constants? This applies currently only for
@@ -239,16 +242,21 @@ min_Voigt_shape = 1e-12 -- shape is almost 0 but not quite for FWHM-gwidth conve
 
 
 -- Whether to write all lines at or near noise level as 0-height in output files? Doing makes it easier to 
--- distinguish scetchy lines in later data analysis, but this also loses some information. 
+-- distinguish sketchy lines in later data analysis, but this also loses some information. 
 -- If this is true then it applies also for nullify_weak_lines_visual.
-nullify_weak_lines_data = false
+nullify_weak_lines_data = true
 
 -- Whether to write all lines at or near noise level as 0-height for output images and sessions? Doing makes 
 -- the plots and sessions more clean and clear, but this also loses some information.
 nullify_weak_lines_visual = false
 
--- The line has to be at least this many times stronger than the noise or it will be written as 0-height
-noise_level_check_multiplier = 2
+-- The line has to have at least this many times higher amplitude or area than the noise or it will be turned into dummy.
+-- Very low amplitude but wide line can still have large area and be easily fitted through the noise.
+-- Line is turned into dummy only if both parameters are worse than noise.
+-- Area noise estimate takes the global noise or local constant and calculates the area of rectangle with min_FWHM_function() width. 
+-- Usually the lines are considerably thicker than min_FWHM_function() width.
+detection_sn_ratio_height = 3
+detection_sn_ratio_area = 4
 
 
 -----------------------
@@ -330,6 +338,12 @@ pad_y_max = nil
 -- Verbosity: -1 is disabled, 0 is most basic feedback, up to 5 which prints every debug message
 debug_mode = -1
 
+-- Whether to print each debug message (e.g. prints 15 lines of same message) or 
+-- to print the message and print the message with the total number of times it was printed on the next line.
+-- If it's true then prints 2 lines for every distinct consecutive message string (message, message (x number)), 
+-- but doesn't finalize in case of crash, so the last message doesn't show how many times it was printed.
+debug_print_message_summary = false
+
 
 -- Do you want to stop for query for continuing after every file? [true/false]
 stop_after_file = false
@@ -342,8 +356,10 @@ stop_before_lines = false
 -- Whether to stop the script after lines are created and before fitting. [true/false]
 stop_before_fitting = false
 
+-- Do you want to stop for query for continuing before every window fitting? [true/false]
+stop_before_fit_window = false
 
--- Do you want to stop for query for continuing after every fitting window? [true/false]
+-- Do you want to stop for query for continuing after every window fitting? [true/false]
 stop_after_fit_window = false
 
 

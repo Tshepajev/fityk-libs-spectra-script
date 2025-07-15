@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.1
+-- Script version: 4.2
 -- Author: Jasper Ristkok
 
 --[[
@@ -98,7 +98,8 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	min_Voigt_shape
 	nullify_weak_lines_data
 	nullify_weak_lines_visual
-	noise_level_check_multiplier
+	detection_sn_ratio_height
+	detection_sn_ratio_area
 	
 	only_correct_spectra
 	save_sessions
@@ -110,9 +111,11 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	pad_y_max
 	
 	debug_mode
+	debug_print_message_summary
 	stop_after_file
 	stop_before_lines
 	stop_before_fitting
+	stop_before_fit_window
 	stop_after_fit_window
 	stop_after_lock_lines
 	
@@ -140,16 +143,13 @@ endpoint = nil
 
 -- Noise amplitudes for current file. Lines smaller than this are written as 0 intensity.
 noise_stdevs = nil -- read from noise_stdevs file in Input_data_corrected/ folder
-noise_stdev = 0
+global_noise_height = 0
 
 -- Output text file name (compiled automatically from output_data_name and output_data_end)
 output_data_name_nr = nil
 
 -- Flag for initializing the output only once
 output_initialized = false
-
--- Check previous error message, so that there wouldn't be 100 identical errors in a row.
-last_error_msg = nil
 
 -- Initialize table for holding input_info folder data
 spectra_info, pixel_info, lines_info = {},{},{}
@@ -205,11 +205,11 @@ function main_program()
 	initialize_variables()
 	
 	-- Reset and initialize Fityk (keeps LUA variables and Fityk GUI formatting, but e.g. user defined functions are deleted)
-	reset()
+	reset_fityk()
 	
 	print([[
 	Starting calculations. 
-	The GUI will be mostly frozen during this process. 
+	The GUI (and the GUI output) will be mostly frozen during this process. 
 	To stop the script prematurely write something in ]]..stopscript_name..[[ in Input_info folder and save the file.
 	]])
 	
@@ -217,7 +217,7 @@ function main_program()
 	load_info()
 	
 	-- resets Fityk and asks user for run parameters
-	local file_check, experiment_check, continue = initialize_program()
+	local file_check, experiment_check, continue = user_query()
 	
 	-- Error in initialization phase
 	if continue == nil then return end
@@ -292,15 +292,28 @@ function initialize_fityk()
 		F:execute("undefine Rectangle")
 	end)
 	F:execute("define Rectangle(height=avgy, start, end) = Sigmoid(0, height, start, 1e-300) + Sigmoid(0, -height, end, 1e-300)")
+	
+	-- Another possibility for a rectangle function is 
+	-- "%_1 = Polyline(-1.79769e308,0, $poly_start,0, $poly_start,$poly_height, $poly_end,$poly_height, $poly_end,0, 1.79769e308,0)"
+	-- but this fits 2x slower than rectangle from 2 Sigmoids.
+	
+	
+	-- RectanglePositive function declaration. Same as Rectangle but height is only positive.
+	pcall(function() -- Try to undefine existing function definition to prevent crash
+		F:execute("undefine RectanglePositive")
+	end)
+	F:execute("define RectanglePositive(height=avgy, start, end) = Sigmoid(0, abs(height), start, 1e-300) + Sigmoid(0, -abs(height), end, 1e-300)")
 end
 
+------------------------------------------
+
 -- Resets data in Fityk and sets the settings again because Fityk also resets it's settings to default
-function reset()
+function reset_fityk()
 	db("reset",2)
 	-- Selects the first dataset
 	F:execute("use @0")
 	
-	-- Resets all Fityk-side info (not LUA-side, that holds all necessary info)
+	-- Resets all Fityk-side info (not LUA-side, that still holds all necessary info)
 	F:execute("reset")
 	
 	-- Define VoigtFWHM and VoigtApparatus functions and relevant settings
@@ -308,30 +321,48 @@ function reset()
 end
 
 -- Deletes all variables
-function delete_variables()
-	db("delete_variables",4)
+function delete_all_variables()
+	db("delete_all_variables", 4)
 	local variables = F:all_variables()
-	for i = #variables-1,0,-1 do
-		F:execute("delete $"..variables[i].name)
+	for idx = #variables - 1, 0, -1 do -- iterate backwards so that loop indexing works after deletion
+		F:execute("delete $"..variables[idx].name)
 	end
 end
-------------------------------------------
+
+-- Deletes all functions
+function delete_all_functions()
+	db("delete_all_functions", 4)
+	local functions = F:all_functions()
+	for idx = #functions - 1, 0, -1 do -- iterate backwards so that loop indexing works after deletion
+		F:execute("delete %"..functions[idx].name)
+	end
+end
+
+-- Deletes all datasets
+function delete_all_datasets()
+	db("delete_all_datasets", 4)
+	
+	F:execute("use @0") -- Prevent future crash because non-existent dataset is selected
+	
+	local series_length = F:get_dataset_count()
+	for dataset_i = series_length - 1, 0, -1 do  -- iterate backwards so that loop indexing works after deletion
+		F:execute("delete @"..dataset_i)
+	end
+end
 
 -- Deletes all functions for dataset
-function delete_functions(dataset_i)
-	db("delete_functions",4)
+function delete_dataset_functions(dataset_i)
+	db("delete_dataset_functions", 4)
 	local functions = F:get_components(dataset_i)
-	for function_index = #functions-1,0,-1 do
+	for function_index = #functions - 1, 0, -1 do  -- iterate backwards so that loop indexing works after deletion
 		F:execute("delete %"..functions[function_index].name)
 	end
 end
-------------------------------------------
 
 -- Deletes dataset with given index, does NOT delete variables
 function delete_dataset(dataset_i)
-	db("delete_dataset",4)
-	delete_functions(dataset_i)
-	-- Deletes the dataset
+	db("delete_dataset", 4)
+	delete_dataset_functions(dataset_i)
 	F:execute("delete @"..dataset_i)
 end
 ------------------------------------------
@@ -339,14 +370,10 @@ end
 -- Deletes all datasets, functions and variables for clean sheet
 -- equivalent to F:execute("reset")
 function delete_all()
-	db("delete_all",4)
-	-- Deletes datasets
-	local series_length = F:get_dataset_count()
-	for dataset_i = series_length-1,0,-1 do
-		F:execute("use @"..dataset_i)
-		delete_dataset(dataset_i)
-	end
-	delete_variables()
+	db("delete_all", 4)
+	delete_all_datasets()
+	delete_all_functions()
+	delete_all_variables()
 end
 
 
@@ -737,7 +764,7 @@ function load_spectra_info(filename,pixel_files,lines_files)
 		else
 			local data_filename = values[1] -- get saved spectrum filename
 			if (not data_filename) or (data_filename == "") then -- no filename, skip loop iteration
-				printe("load_spectra_info() | No filename")
+				printe("load_spectra_info() | No filename in the file row field. filename: "..tostring(filename))
 				goto load_spectra_info_continue 
 			end
 			
@@ -928,9 +955,9 @@ end
 -- Program initialization
 -----------------------------------
 
--- resets Fityk and asks user for run parameters
-function initialize_program()
-	db("initialize_program",0)
+-- Asks user for run parameters
+function user_query()
+	db("user_query",0)
 	
 	-- Asks whether to use 1 experiment mode (good for debugging or line finding)
 	local answer2 = F:input("Manually check 1 experiment or 1 series? [y/n]")
@@ -941,7 +968,7 @@ function initialize_program()
 		
 		-- Spectra info is missing for provided filename
 		if not spectra_info[data_filename] then 
-			printe("initialize_program() | \"" .. tostring(data_filename) .. "\" file is not a key in spectra_info table. Has to be same as in Spectra_info*.csv")
+			printe("user_query() | \"" .. tostring(data_filename) .. "\" file is not a key in spectra_info table. Has to be same as in Spectra_info*.csv")
 			return
 		end
 		
@@ -955,15 +982,7 @@ function initialize_program()
 	
 	-- Asks whether you are happy with inserted values and wish to continue
 	local continue_answer = F:input("Do you want to continue with the program? [y/n]")
-	
-	if continue_answer == 'y' then
-		
-		-- Cleans Fityk-side from everything. Equivalent to delete_all().
-		reset()
-		continue_answer = true
-	else
-		continue_answer = false
-	end
+	continue_answer = continue_answer == 'y'
 	
 	-- Remove the extension (e.g. ".txt")
 	data_filename = remove_filename_extension(data_filename)
@@ -994,6 +1013,10 @@ function process_data(file_check, experiment_check)
 	
 	-- Checks whether to view 1 file
 	if file_check then
+		
+		-- Reset stuff for the new spectra series
+		reset_series()
+		
 		process_data_series(file_check, experiment_check)
 	else
 		
@@ -1007,6 +1030,10 @@ function process_data(file_check, experiment_check)
 		
 		-- Iterate over all data files
 		for i, data_filename in ipairs(series_filenames) do
+			
+			-- Reset stuff for the new spectra series
+			reset_series()
+			
 			process_data_series(data_filename, experiment_check)
 			
 			if stopscript then return end
@@ -1183,6 +1210,9 @@ function process_data_series(data_filename, experiment_check)
 	-- Iterate over spectra in series and process them one by one
 	for current_spectrum_index = start_ind, end_ind do
 		
+		-- Reset stuff for each spectrum
+		reset_spectrum()
+		
 		-- Index is large enough to require second batch
 		if ((current_spectrum_index == start_ind) and -- Check for moving average window requiring second batch on the first iteration
 			(moving_avg_experiment_radius > 0) and 
@@ -1314,6 +1344,8 @@ function process_data_series(data_filename, experiment_check)
 		-- Load the spectrum into GUI
 		dataset_from_table(current_spectrum, series_id, current_spectrum_index)
 		
+		-- Register the boundaries for line fitting and output image
+		register_spectrum_boundaries()
 		
 		-- Process the spectrum (fitting)
 		process_spectrum(data_filename, current_spectrum_index, experiment_check)
@@ -1326,102 +1358,186 @@ function process_data_series(data_filename, experiment_check)
 			stopscript = true
 			return 
 		end
-		
-		if (not experiment_check) then
-			delete_dataset(0)
-			delete_variables() -- Deletes all variables. This wasn't done with deleting functions and it kept hogging resources. Now long processes take c.a 60x less time
-		end
-		
 	end
 	
 	
 	print("Series ".. series_id .." done.")
-	
-	-- Resets all Fityk-side info (not LUA-side, that holds all necessary info)
-	reset()
 end
 
+
+-- Reset stuff for each spectra series, so that new spectra series (or Spectra_info*.csv file) can be used
+function reset_series()
+	db("reset_series", 1)
+	
+	-- Resets all Fityk-side info (not LUA-side, that still holds all necessary info)
+	reset_fityk()
+end
+
+-- Reset stuff for each spectrum
+function reset_spectrum()
+	db("reset_spectrum", 2)
+	
+	-- Resets all Fityk-side info (not LUA-side, that still holds all necessary info)
+	reset_fityk()
+	
+	-- Create a global constant
+	F:execute("%bg = Constant(a = 0)") -- background continuum
+	F:execute("F += %bg") -- add to the model
+	
+	-- Create temporary local constant for the main line (moves with the main window)
+	local local_constant_name = get_local_const_name()
+	F:execute("%"..local_constant_name.." = RectanglePositive(height = 0, start = 0, end = 0)")
+	F:execute("F += %"..local_constant_name)
+	
+	-- Reset global line variables
+	linked_lines = {}
+	lines_data = {}
+	fitted_lines_params = {}
+	fitted_variables = {}
+end
+
+-- Return the name of the local constant which is associated with the main line window
+function get_local_const_name()
+	return "bg_local" -- Main line
+end
+
+-- Return the name of a secondary window local constant which is associated with the line of line_index
+function get_secondary_local_const_name(line_index)
+	return get_local_const_name().."_"..tostring(line_index)
+end
 
 -- Get the longest lines_info_filename that is defined in Spectra_info*.csv, otherwise get the longest in the folder
 -- If the one defined in the data_filename is (also) the longest then use that instead
 function get_lines_info_filename(data_filename)
 	db("get_lines_info_filename", 1)
 	
+	local wanted_filename = spectra_info[data_filename] and spectra_info[data_filename]["Lines filename"]
+	
 	-- Find lines info file with most lines
 	local table_size
 	local potential_filenames = {}
 	
-	-- Collect lines_files to be used
-	local lines_files = {}
-	for data_filename, info in pairs(spectra_info) do
-		lines_files[info["Lines filename"]] = true
+	-- The file has already been initialized (was the longest), check if the wanted file is the same
+	if lines_info_filename then 
+		
+		-- Filename already initialized but current filename not defined, use the last one
+		if (not wanted_filename) then return end
+		
+		potential_filenames = {lines_info_filename, wanted_filename}
+		table_size = tableLength(lines_info_filename)
+		
+	-- Check defined files or all Lines_info*.csv files in the folder
+	else
+		-- Collect lines_files to be used
+		local lines_files = {}
+		local has_no_filename = false -- true if any series doesn't have Lines filename defined (and isn't sole file in folder)
+		for series_filename, info in pairs(spectra_info) do
+			lines_files[info["Lines filename"]] = true
+			has_no_filename = has_no_filename or (not info["Lines filename"])
+		end
+		
+		-- not only one lines file specified for all series, find longest list from all files in input info folder
+		if has_no_filename or (tableLength(lines_files) ~= 1) then
+			lines_files = lines_info
+		end
+		
+		-- Iterate over defined files or all Lines_info*.csv files in the folder
+		for filename,_ in pairs(lines_files) do
+			
+			-- Get nr of lines defined in the file
+			local size = tableLength(lines_info[filename])
+			table_size = table_size or size -- initialize value
+			
+			-- Save the longest list filenames
+			if size == table_size then
+				table.insert(potential_filenames, filename)
+			
+			-- overwrite variable values because there's even longer list
+			elseif size > table_size then
+				potential_filenames = {[1] = filename} -- (re)initialize
+				table_size = size
+			end
+		end
 	end
 	
-	-- no lines file specified, find longest list from all files in input info folder
-	if tableLength(lines_files) <= 0 then
-		lines_files = lines_info
-	end
-	
+	-- Iterate over potential files and check if their contents match (wavelengths and identificator)
 	local files_are_different = false
-	local wavelengths = {}
-	local ids = {}
-	
-	-- Iterate over defined files
-	for filename,_ in pairs(lines_files) do
+	local wavelengths, ids
+	for _, filename in ipairs(potential_filenames) do
 		
 		-- Iterate over lines and check if the files match
 		for line_index, info in ipairs(lines_info[filename]) do
 				
 			-- Check if the lines in different files match
-			if not files_are_different then
+			if not files_are_different then -- lazy match
 				
-				-- initialize the wavelength and ID 
-				wavelengths[line_index] = wavelengths[line_index] or info["Wavelength (m)"]
-				ids[line_index] = ids[line_index] or info["Identificator"]
+				-- Check lengths
+				if wavelengths and (tableLength(info["Wavelength (m)"]) ~= tableLength(wavelengths)) then
+					files_are_different = true
+				elseif ids and (tableLength(info["Identificator"]) ~= tableLength(ids)) then
+					files_are_different = true
+				end
 				
-				-- scheck if wavelength and ID match with previously saved ones.
-				files_are_different = files_are_different or (wavelengths[line_index] ~= info["Wavelength (m)"])
-				files_are_different = files_are_different or (ids[line_index] ~= info["Identificator"])
+				if not files_are_different then -- lazy match
+					
+					-- initialize the wavelength and ID 
+					wavelengths = wavelengths or {}
+					ids = ids or {}
+					wavelengths[line_index] = wavelengths[line_index] or info["Wavelength (m)"]
+					ids[line_index] = ids[line_index] or info["Identificator"]
+					
+					-- scheck if wavelength and ID match with previously saved ones.
+					files_are_different = files_are_different or (wavelengths[line_index] ~= info["Wavelength (m)"])
+					files_are_different = files_are_different or (ids[line_index] ~= info["Identificator"])
+				end
 			end
 		end
-		
-		-- Get nr of lines defined in the file
-		local size = tableLength(lines_info[filename])
-		table_size = table_size or size -- initialize value
-		
-		-- Save the longest list filenames
-		if size == table_size then
-			table.insert(potential_filenames, filename)
-		
-		-- overwrite variable values because there's even longer list
-		elseif size > table_size then
-			potential_filenames = {[1] = filename} -- (re)initialize
-			table_size = size
-			
-			files_are_different = true
-		end
-	end
-	
-	-- print error log
-	if files_are_different then
-		print("WARNING! get_lines_info_filename() | lines info is different in specified input files (different size list or different wavelengths and Identificators), taking longest list. You might want to input only spectra with same lines because the output must have same columns for all spectra.")
 	end
 	
 	-- Check if defined filename has the longest list of lines
-	if data_filename then
-		wanted_filename = spectra_info[data_filename] and spectra_info[data_filename]["Lines filename"]
-		wanted_table_size = wanted_filename and lines_info[wanted_filename] and tableLength(lines_info[wanted_filename]) or 0
+	local wanted_is_longest = false
+	local wanted_table_size = wanted_filename and lines_info[wanted_filename] and tableLength(lines_info[wanted_filename]) or 0
+	if (wanted_table_size >= table_size) then wanted_is_longest = true end
+	
+	-- Use the same file for all series (duration of the script), unless the other specified file contains same data
+	-- if file is initialized and wanted file is same then use wanted file
+	-- elseif file is initialized and wanted file is different then use previous lines_info_filename
+	-- elseif file isn't initialized and wanted file is longest then use wanted file
+	-- elseif file isn't initialized and wanted file isn't longest then use random longest file 
+	
+	-- if file is initialized
+	if lines_info_filename then
 		
-		if wanted_table_size >= table_size then
-			potential_filenames[1] = wanted_filename
+		-- if file is initialized and wanted file is same then use wanted file
+		if not files_are_different then
+			lines_info_filename = wanted_filename
+		end
+		
+		-- if file is initialized and wanted file is different then use previous lines_info_filename; do nothing
+	
+	-- File isn't initialized
+	else
+		-- if file isn't initialized and wanted file is longest then use wanted file
+		if wanted_is_longest then -- therefore also the wanted file is defined
+			lines_info_filename = wanted_filename
+		
+		-- if file isn't initialized and wanted file isn't longest then use random longest file 
 		else
-			printe("get_lines_info_filename() | Wanted Lines filename didn't have the most lines. Using instead: "..tostring(potential_filenames[1]))
+			lines_info_filename = potential_filenames[1]
+		end
+		
+		-- Print error log once if files are different and file isn't initialized
+		if files_are_different then
+			print("WARNING! get_lines_info_filename() | lines info is different in specified longest input files (different wavelengths and Identificators), taking longest list. You might want to input only spectra with same lines because the output must have same columns for all spectra.")
 		end
 	end
 	
-	-- Take the first filename from the list of filenames containing longest line lists
-	lines_info_filename = potential_filenames[1]
+	-- Couldn't use the file that was specified
+	if (lines_info_filename ~= wanted_filename) and (not wanted_is_longest) then
+		printe("get_lines_info_filename() | Wanted Lines filename didn't have the most lines. Using instead: "..tostring(lines_info_filename))
+	end
 	
+	-- Failed to initialize
 	if not lines_info_filename then
 		printe("get_lines_info_filename() | Failed to get lines_info_filename. data_filename: "..tostring(data_filename)..", potential_filenames: "..strTable(potential_filenames))
 		stopscript = true
@@ -1693,7 +1809,7 @@ function data_correction(data_table, data_filename)
 	data_table = subtract_background(data_table, data_filename)
 	
 	-- Load pixel-wise corrections info
-	local multipliers, additives, wavelengths, avg_sensitivity_at_signal
+	local multipliers, additives, wavelengths, avg_sensitivity_at_noise
 	local pixel_info_filename = spectra_info[data_filename]["Pixel correction filename"]
 	if pixel_info_filename then -- file with correction info exists
 		
@@ -1707,18 +1823,17 @@ function data_correction(data_table, data_filename)
 		additives = pixel_info[pixel_info_filename]["pixel_additives"]
 		wavelengths = pixel_info[pixel_info_filename]["Wavelength (m)"]
 		
-		-- Estimate sensitivity 
-		local center_pixel_index = math.floor(tableLength(multipliers) / 2)
-		avg_sensitivity_at_signal = (multipliers[center_pixel_index] + multipliers[center_pixel_index - 1] + multipliers[center_pixel_index + 1]) / 3
+		-- Estimate sensitivity
+		avg_sensitivity_at_noise = get_sensitivity_at_noise_range(multipliers, wavelengths) or 1
 	else
-		avg_sensitivity_at_signal = 1
+		avg_sensitivity_at_noise = 1
 		printe("data_correction() | Pixel correction filename missing, skipping pixel intensity and wavelength correction for "..tostring(compile_corrected_series_id()))
 	end
 	
 	-- Finds line detection threshold before sensitivity and x-axis correction
 	local noise_stdevs
 	if noise_before_sensitivity_correction then
-		noise_stdevs = estimate_noise_amplitude(data_table, avg_sensitivity_at_signal)
+		noise_stdevs = estimate_noise_amplitude(data_table, avg_sensitivity_at_noise)
 	end
 	
 	-- File-wise correction (e.g. gate width and gain)
@@ -1758,6 +1873,20 @@ function data_correction(data_table, data_filename)
 	end
 	
 	return data_table, noise_stdevs
+end
+
+-- Get median noise between noise_estimate_start and noise_estimate_end
+function get_sensitivity_at_noise_range(multipliers, wavelengths)
+	
+	-- Gather multipliers from the noise range
+	local noise_mults = {}
+	for idx, wl in ipairs(wavelengths) do
+		if (wl >= noise_estimate_start) and (wl <= noise_estimate_end) then
+			table.insert(noise_mults, multipliers[idx])
+		end
+	end
+	
+	return wrapSilent(function() return stats.median(noise_mults) end) -- wrap in case there's an empty table
 end
 
 -- Subtract background (blind spectrum) from spectra if it's defined. 
@@ -1812,13 +1941,10 @@ function subtract_background(data_table, data_filename)
 end
 
 -- Finds line detection threshold. Needs to be before y-correction because then the pure-noise edges might be cut off by sensitivity.
-function estimate_noise_amplitude(data_table, avg_sensitivity_at_signal)
+function estimate_noise_amplitude(data_table, avg_sensitivity_at_noise)
 	db("estimate_noise_amplitude", 4)
 	
-	if not avg_sensitivity_at_signal then 
-		avg_sensitivity_at_signal = 1 
-	end
-	
+	avg_sensitivity_at_noise = avg_sensitivity_at_noise or 1
 	
 	if noise_estimate_start and noise_estimate_end then
 		local noise_table = {} -- table of intensity tables. Each table has intensities of that experiment
@@ -1840,7 +1966,8 @@ function estimate_noise_amplitude(data_table, avg_sensitivity_at_signal)
 		-- Calculate stdev of each intensity table
 		local noise_stdevs = {}
 		for i,int_table in ipairs(noise_table) do
-			table.insert(noise_stdevs, stats.standardDeviation(int_table) * avg_sensitivity_at_signal) -- TODO: additional_multiplier?
+			local stdev = wrapSilent(function() return stats.standardDeviation(int_table) * avg_sensitivity_at_noise end) or 0
+			table.insert(noise_stdevs, stdev)
 		end
 		
 		return noise_stdevs
@@ -1958,21 +2085,13 @@ end
 function process_spectrum(data_filename, spectrum_index, experiment_check)
 	db("process_spectrum", 2)
 	
-	-- Reset global line variables
-	linked_lines = {}
-	lines_data = {}
-	fitted_lines_params = {}
-	fitted_variables = {}
-	
-	-- Move the view onto the data
-	F:execute("plot @0")
 	
 	-- Check whether user wants to stop the script while it's still running
 	check_stopscript()
 	if stopscript then return end -- stop the script
 	
 	-- Get the noise amplitude estimate for current experiment
-	noise_stdev = noise_stdevs and noise_stdevs[spectrum_index + 1] or 0 -- 1st value in noise_stdevs is filename, if nil then 0
+	global_noise_height = noise_stdevs and noise_stdevs[spectrum_index + 1] or 0 -- 1st value in noise_stdevs is filename, if nil then 0
 	
 	if stop_before_lines then
 		print("Stopping the script before line creation")
@@ -1986,9 +2105,9 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	-- Generates and fits functions
 	local minimal_data_value, max_constant_value, max_height_values, angle_errors, polyline_values = fit_functions(data_filename)
 	
-	-- Write weak lines as 0-height before write_output()
+	-- Turn weak lines into dummies before write_output()
 	if nullify_weak_lines_data then
-		nullify_lines()
+		nullify_lines(polyline_values)
 	end
 	
 	-- Check whether user wants to stop the script while it's still running
@@ -2004,9 +2123,9 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	-- Writes data into output file
 	write_output(data_filename, spectrum_index, errors)	
 	
-	-- Write weak lines as 0-height after write_output()
+	-- Turn weak lines into dummies after write_output()
 	if nullify_weak_lines_visual and (not nullify_weak_lines_data) then
-		nullify_lines()
+		nullify_lines(polyline_values)
 	end
 	
 	-- Save the session in case there's bad fit
@@ -2038,12 +2157,6 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 		stopscript = true
 		return 
 	end
-	
-	if (not experiment_check) then
-		delete_dataset(0)
-		delete_variables() -- Deletes all variables. This wasn't done with deleting functions and it kept hogging resources. Now long processes take c.a 60x less time
-	end
-	
 end
 
 -- Read data from original spectra file into LUA table
@@ -2087,8 +2200,15 @@ function register_spectrum_boundaries()
 	-- Select first dataset
 	F:execute("use @0")
 	
-	startpoint = cut_start or F:calculate_expr("min(X)") -- first pixel as startpoint
-	endpoint = cut_end or F:calculate_expr("max(X)") -- last pixel as end
+	local min_x = F:calculate_expr("min(X)")
+	local max_x = F:calculate_expr("max(X)")
+	
+	startpoint = cut_start or min_x -- first pixel as startpoint
+	endpoint = cut_end or max_x -- last pixel as end
+	
+	-- Constructs plot command with correct ranges and shows the entire range in the GUI for easier debugging
+	plot_command = "plot ["..tostring(min_x * 0.95)..":"..tostring(max_x * 1.05).."] [:]"
+	F:execute(plot_command)
 end
 
 
@@ -2101,10 +2221,6 @@ end
 -- Line fitting for 1 constant and the Voigt/Gaussian/Lorentzian profiles defined for functions
 function fit_functions(data_filename)
 	db("fit_functions", 1)
-	
-	
-	-- Register the boundaries for line fitting and output image
-	register_spectrum_boundaries()
 	
 	-- Fit constant first, select datapoints for that
 	if (noise_estimate_start ~= -infinity) or (noise_estimate_end ~= infinity) and (not noise_before_sensitivity_correction) then -- at least one is defined and data exists after correction
@@ -2145,13 +2261,10 @@ function fit_functions(data_filename)
 	--F:execute("guess %bg = Constant(a = "..tostring(constant_parameters)..")") -- background continuum
 	
 	-- Lock constant to minimal_data_value, since local constants are generated on top of it
-	F:execute("guess %bg = Constant(a = "..tostring(minimal_data_value)..")") -- background continuum
-	
-	-- Fit constant
-	--F:execute("@0: fit")
+	F:execute("%bg = Constant(a = "..tostring(minimal_data_value)..")") -- background continuum
 	
 	-- Lock constant value for fitting lines and save error before it's lost due to locking
-	local constant_angle_error = 0 --F:calculate_expr("$constant_variable.error") -- save uncertainty
+	local constant_angle_error = 0 -- save uncertainty
 	--F:execute("$constant_variable = {$constant_variable}")
 	
 	-- Save the error
@@ -2160,7 +2273,6 @@ function fit_functions(data_filename)
 	
 	-- Create all lines and lock all variables
 	local max_height_values = {}
-	lines_info_filename = spectra_info[data_filename]["Lines filename"]
 	initialize_all_lines(minimal_data_value, max_height_values)
 	
 	if stop_before_fitting then 
@@ -2179,12 +2291,8 @@ function fit_functions(data_filename)
 			return 
 		end
 		
-		fit_one_line(line_index, angle_errors, polyline_values, minimal_data_value, max_height_values)
+		fit_one_line(line_index, angle_errors, polyline_values, minimal_data_value)
 	end
-	
-	
-	-- Iterates over lines and checks their area. If not according to requirements (stronger than noise) the line height is written as 0.
-	--remove_invalid_lines(minimal_data_value)
 	
 	return minimal_data_value, max_constant_value, max_height_values, angle_errors, polyline_values
 end
@@ -2193,6 +2301,10 @@ end
 -- This is necessary to link variables before first fitting
 function initialize_all_lines(minimal_data_value, max_height_values)
 	db("initialize_all_lines", 1)
+	
+	-- Create temporary local constant for the main line (moves with the main window)
+	--local local_constant_name = get_local_const_name()
+	--F:execute("%"..local_constant_name.." = RectanglePositive(height = 0, start = "..tostring(startpoint)..", end = "..tostring(endpoint)..")")
 	
 	-- Table to hold info for each line and each parameter of that line whether it was simple, locked or compound variable
 	-- root_variables[line_index] = {param_name_1 = {"name" = variable_name, "v_type" = variable_type}, param_name_2 = ...}
@@ -2357,10 +2469,11 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	
 	-- Get noise level. Since local constant hasn't been fitted yet then only global noise level can be used
 	--local noise = F:calculate_expr("centile("..tostring(height_percentile_of_existing_lines)..", y if a)") - minimal_data_value -- some percentile of all active data - min value of active data
-	local noise_level = noise_stdev
+	local noise_level = global_noise_height
 	
 	--if height <= noise then -- line doesn't exist 
-	if height <= (noise_stdev * 0.5) then -- line doesn't exist, might be wide, so lower than noise_stdev is ok
+	local smaller_noise = 0.75 -- Low but wide line can still be distinguished from noise but I have to only use height here, so make the condition more relaxed.
+	if height <= (global_noise_height * detection_sn_ratio_height * smaller_noise) then -- line doesn't exist, might be wide, so lower than global_noise_height is ok
 		return -- instead create a dummy function
 	end
 	
@@ -3160,6 +3273,11 @@ function save_line_info(line_index, root_variables)
 		-- Save root parent variables
 		if line_type == "dummy" then
 			lines_data[line_index]["parameters"][parameter_name].root_vars = {}
+			
+			local direct_var_name = get_direct_variable_name(function_name, parameter_name)
+			lines_data[line_index]["parameters"][parameter_name].root_vars.names = {direct_var_name}
+			lines_data[line_index]["parameters"][parameter_name].root_vars.v_types = {"locked"}
+		
 		else
 			lines_data[line_index]["parameters"][parameter_name].root_vars = root_variables[line_index][parameter_name]
 		end
@@ -3256,18 +3374,19 @@ end
 -- Lock the lines for fitting other regions
 -- Gets run after fitting the local window. Center line is of interest, left stay locked, right lines get unlocked next iteration.
 function lock_lines_simple()
-	db("lock_lines_simple", 1)
+	db("lock_lines_simple", 3)
 	
 	-- Iterates over all spectral lines
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		
-		if lines_data[line_index].type == "dummy" then return end -- dummy function
 		lock_parameters_simple(line_index)
 	end
 end
 
 -- Lock the parameters of a line
 function lock_parameters_simple(line_index)
+	db("lock_parameters_simple", 4)
+	
+	if lines_data[line_index].type == "dummy" then return end -- dummy function
 	
 	-- Iterate over line parameters
 	for param_name, tbl in pairs(lines_data[line_index].parameters) do
@@ -3283,32 +3402,51 @@ end
 -- Fits the current line along with any lines linked to it
 -- Process only a part of spectrum at a time. Get first line (sorted by wavelength) and fit only that and lines that are in its influence diameter.
 -- Also unlock other linked lines and a smaller diameter around them.
-function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_data_value, max_height_values)
+function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_data_value)
 	db("fit_one_line", 2)
 	
+	local function_name = lines_data[main_line_index].name
 	
 	-- Get range in which other (normal) lines influence the current line
 	local second_order_multiplier = 1.5
 	local beginning, ending = get_influence_diameter(main_line_index, second_order_multiplier)
 	
-	
-	-- TODO: prevent crash if user defines lines far outside the range, so that no datapoints are active
-	-- Incorrect range, no points active
-	--[[
-	if (beginning >= endpoint) or (ending <= startpoint) then
-		turn_into_dummy(main_line_index)
-		return
-	end
-	--]]
-	
 	-- Activate dataset points in the influence diameter (plus extra) of the main line
 	select_active_points(beginning, ending)
+	
+	-- Check if any points are active
+	local no_active_points = F:calculate_expr("max(A)") == 0
+	
+	-- Incorrect range, no points active
+	--if (beginning == ending) or (beginning >= endpoint) or (ending <= startpoint) then
+	if no_active_points then
+		
+		-- Exclude the line from processing
+		if (lines_data[main_line_index].type ~= "dummy") then
+			turn_into_dummy(main_line_index) -- is also done in process_spectrum()
+			printe("fit_one_line() | No active datapoints for "..tostring(function_name)..". Turning line into dummy.", 1)
+		end
+		
+		-- Stop for debugging
+		if (stop_after_fit_window or stop_after_lock_lines) and (F:input("Stop at line index "..main_line_index.."? [y/n]")  == 'y') then
+			print("Stopping the script because of your input")
+			stopscript = true
+		end
+		
+		-- Add the local constant into polyline for session output, keeps indexing
+		local poly_tbl = {["start"] = beginning, ["ending"] = ending, ["height"] = 0}
+		table.insert(polyline_values, poly_tbl)
+		
+		return
+	end
+	
 	
 	----------------------------------------------------------
 	-- Fit local secondary and temporary constant 
 	-- Local secondary and temporary constant to account for varying background/continuum signal. 
 	-- The constant is bound between local minimal data value and maximum defined data value (percentile). 
 	-- Otherwise constant is fitted too high because of wide or high lines.
+	
 	-- Lowest constant bound
 	local minimal_data_value_temp = F:calculate_expr("min(y if a)") - minimal_data_value
 	if minimal_data_value_temp < 0 then minimal_data_value_temp = 0 end -- physical constraint
@@ -3322,53 +3460,85 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	-- Binds constant to be fitted between defined percentile and (minimal data value or 0)
 	-- equation: constant = (maximum + minimum) / 2 + (maximum - minimum) / 2 * sin(~angle)
 	local constant_parameters_temp = tostring((max_constant_value_temp + minimal_data_value_temp) / 2).." + "..tostring((max_constant_value_temp - minimal_data_value_temp) / 2).."*sin($constant_variable_local)"
-	F:execute("guess %bg_local = Constant(a = "..tostring(constant_parameters_temp)..")") -- background
 	
-	-- TODO: consider situation when there are multiple active windows, fit temporary local constant for linked regions?
+	-- Fit temporary local constant for the main window
+	local local_constant_name = get_local_const_name()
+	F:execute("%"..local_constant_name.." = Rectangle(height = "..tostring(constant_parameters_temp)..", start = "..tostring(beginning)..", end = "..tostring(ending)..")")
+	
+	
 	----------------------------------------------------------
 	
 	
 	-- dummy function, don't fit lines, but fit the local constant
 	local is_dummy = lines_data[main_line_index].type == "dummy"
 	
-	local main_window_lines, secondary_window_lines
+	local main_window_lines
+	local secondary_windows_lines = {}
+	local local_constant_names = {}
+	
 	if not is_dummy then 
 		main_window_lines = gather_lines_main(main_line_index) -- Format: tbl[func_name][param_name] = true
 		local directly_linked_lines_list = gather_linked_lines(main_line_index) -- Format: tbl[func_name] = line_idx
 		
-		-- TODO: what if another parameter of the secondary linked line is linked to a third line?
+		-- TODO: what if another parameter of the secondary linked line is linked to a third line? -- should be diminishing deviation from ideal fit, so not important
 		
 		-- Activate datapoints for each linked line window
 		for func_name, line_idx in pairs(directly_linked_lines_list) do
-			
-			-- Get range in which lines influence the current line
-			local second_order_multiplier = 0.5
-			local beginning, ending = get_influence_diameter(line_idx, second_order_multiplier)
-			
-			-- Activate dataset points in the influence diameter (no extra) of the line linked to the main line
-			activate_points(beginning, ending)
+			local secondary_window_lines, local_const_name = activate_secondary_window(beginning, ending, func_name, line_idx) -- Format: tbl[func_name][param_name] = true
+			secondary_windows_lines = tableMerge(secondary_windows_lines, secondary_window_lines) -- Format: tbl[func_name][param_name] = true
+			table.insert(local_constant_names, local_const_name)
+		end
+		
+		-- Remove elements from secondary_windows_lines that are in main_window_lines
+		for func_name, tbl in pairs(secondary_windows_lines) do
+			for param_name, bool in pairs(tbl) do
+				if main_window_lines[func_name] and main_window_lines[func_name][param_name] then
+					secondary_windows_lines[func_name][param_name] = nil
+				end
+			end
 		end
 		
 		-- Iterate over linked lines and get the lines of those windows (narrower than main window)
-		secondary_windows_lines = gather_secondary_lines(directly_linked_lines_list) -- Format: tbl[func_name][param_name] = true
+		--secondary_windows_lines = gather_secondary_lines_iterate(directly_linked_lines_list) -- Format: tbl[func_name][param_name] = true
 		
 		-- Get all the lines and parameters associated with the current one (nearby and linked)
 		local lines_params_table = tableMerge(shallowCopy(main_window_lines), secondary_windows_lines) -- Format: tbl[func_name][param_name] = true
 		
-		-- TODO: unlock lines very close to the main line (diameter * 0.25?) and unlock lines linked to those (don't save vars for those)
+		-- TODO: unlock lines very close to the main secondary line (diameter * 0.25?) and unlock lines linked to those (don't save vars for those)
 		-- TODO: unlock tertiary linked lines (main is linked to line2 and line2 is linked to line3 but main isn't directly linked to line3)?
 		
 		-- Unlock the variables of those lines
-		-- Writes into max_height_values tables
-		activate_lines(lines_params_table, minimal_data_value, max_height_values)
+		activate_lines(lines_params_table)
+	end
+	
+	-- Stop for debugging
+	if stop_before_fit_window and (F:input("Stop at line index "..main_line_index.." before fitting? [y/n]")  == 'y') then
+		print("Stopping the script because of your input")
+		stopscript = true
+		return
 	end
 	
 	
-	-- fit 2x to avoid local minima, catch error in case only dummies are to be fitted
-	wrap(function() 
-		--F:execute("@0: fit")
+	-- catch error in case only dummies are to be fitted
+	local status, err = pcall(function() 
 		F:execute("@0: fit")
+		--F:execute("@0: fit") -- fit 2x to avoid local minima
 	end)
+	if not status then
+		
+		-- check if all active points are 0
+		local min_y = F:calculate_expr("min(y) if a")
+		local max_y = F:calculate_expr("max(y) if a")
+		if (min_y == 0) and (max_y == 0) then
+			printe("fit_one_line() | Failed to fit line name: "..tostring(function_name)..", line type: "..tostring(lines_data[main_line_index].type).." because active points were all 0. Turning line into dummy. Error message: "..tostring(err), 1)
+			--turn_into_dummy(main_line_index) -- sometimes well fitted strong line fails when window reaches it, so not a dummy
+		
+		-- Some other error
+		else
+			printe("fit_one_line() | Failed to fit line name: "..tostring(function_name)..", line type: "..tostring(lines_data[main_line_index].type)..". Error message: "..tostring(err))
+		end
+	end
+	
 	
 	-- Stop for debugging
 	if stop_after_fit_window and (F:input("Stop at line index "..main_line_index.." after fitting? [y/n]")  == 'y') then
@@ -3379,29 +3549,30 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	
 	----------------------------------------------------------
 	-- Calculate value and error of the local constant
-	local constant_value_temp = F:calculate_expr("%bg_local.a")
+	local constant_value_temp = F:calculate_expr("%"..local_constant_name..".height")
 	angle_errors.bg_local.value[main_line_index] = constant_value_temp
 	if (constant_value_temp == minimal_data_value_temp) or (constant_value_temp == max_constant_value_temp) then -- stopped by the bounds
 		angle_errors.bg_local.error[main_line_index] = 0
 	
 	else -- ordinary fit
-		local angle_error = F:calculate_expr("$constant_variable_local.error") -- save uncertainty
-		angle_errors.bg_local.error[main_line_index] = math.abs((max_constant_value_temp - minimal_data_value_temp) / 2 * math.cos(constant_value_temp) * angle_error)
+		
+		-- wrap because sometimes Fityk has a zeroed covariance matrix
+		local angle_error = wrapVerbose(function() return F:calculate_expr("$constant_variable_local.error") end,
+		"ERROR: fit_one_line() | Failed to get $constant_variable_local variable error. main_line_index: "..tostring(main_line_index)
+		)
+		
+		angle_errors.bg_local.error[main_line_index] = angle_error and math.abs((max_constant_value_temp - minimal_data_value_temp) / 2 * math.cos(constant_value_temp) * angle_error) or nil
 	end
 	
 	-- Add the local constant into polyline for session output
 	local poly_tbl = {["start"] = beginning, ["ending"] = ending, ["height"] = constant_value_temp}
 	table.insert(polyline_values, poly_tbl)
 	
-	-- Delete the temporary background constant in order not to mess up line indices
-	F:execute("delete %bg_local")
 	
 	----------------------------------------------------------
 	
 	
-	if not is_dummy then 
-		-- Check the current line area. If not according to requirements (stronger than noise) the line height is written as 0.
-		--remove_invalid_line(main_line_index, root_variables, noise_stdev)
+	if not is_dummy then -- also works if line was not dummy before fit failed
 		
 		-- Lock the variables of main lines
 		lock_lines(main_line_index, main_window_lines)
@@ -3411,14 +3582,60 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 			local line_index = get_line_index_by_name(line_name)
 			lock_parameters_simple(line_index)
 		end
+		
+		-- TODO: save secondary window local constant if the linked line won't be fitted again
+		--if fitted_lines_params[function_name] and fitted_lines_params[function_name][param_name] then end
+		
+		-- Delete the temporary background constants of secondary windows
+		for idx, func_name in ipairs(local_constant_names) do
+			F:execute("delete %"..func_name)
+		end
 	end
 	
 	-- Stop for debugging
 	if stop_after_lock_lines and (F:input("Stop at line index "..main_line_index.." after locking? [y/n]")  == 'y') then
-		print("Stopping the script because of your input")
+		print("Stopping the script because of stop_after_lock_lines")
 		stopscript = true
 		return
 	end
+end
+
+
+-- Activate secondary window of the line linked to the main line
+function activate_secondary_window(main_window_beginning, main_window_ending, func_name, line_idx)
+	local secondary_window_lines = {}
+	
+	-- Get range in which lines influence the current line
+	local second_order_multiplier = 0.5
+	local beginning2, ending2 = get_influence_diameter(line_idx, second_order_multiplier)
+	
+	-- Clip the secondary range, so that it doesn't interfere with the main window
+	if (beginning2 >= main_window_beginning) and (ending2 <= main_window_ending) then -- window is inside the main window
+		-- skip the linked line
+		return secondary_window_lines
+	
+	elseif (beginning2 >= main_window_beginning) and (beginning2 <= main_window_ending) then -- window interacts with main window, stays on the right
+		beginning2 = clip(beginning2, main_window_ending + infinitesimal)
+	
+	elseif (ending2 >= main_window_beginning) and (ending2 <= main_window_ending) then -- window interacts with main window, stays on the left
+		ending2 = clip(ending2, nil, begining - infinitesimal)
+	
+	--elseif beginning2 > main_window_ending then -- normal, window is right of main window
+	--elseif ending2 < main_window_beginning then -- normal, window is left of main window
+	end
+	
+	-- Activate dataset points in the influence diameter (no extra) of the line linked to the main line
+	activate_points(beginning2, ending2)
+	
+	-- Fit temporary local constant for the linked windows
+	local local_constant_name = get_secondary_local_const_name(line_idx)
+	F:execute("%"..local_constant_name.." = RectanglePositive(height = ~{min(y if (a and x > "..tostring(beginning2).." and x < "..tostring(ending2).."))}, start = "..tostring(beginning2)..", end = "..tostring(ending2)..")")
+	F:execute("F += %"..local_constant_name)
+	
+	-- Gather the lines of the secondary window part that doesn't interact with the main window
+	secondary_window_lines = gather_secondary_lines(line_idx, beginning2, ending2) -- Format: tbl[func_name][param_name] = true
+	
+	return secondary_window_lines, local_constant_name
 end
 
 
@@ -3429,10 +3646,12 @@ function get_influence_diameter(line_index, second_order_multiplier)
 	local info = lines_info[lines_info_filename][line_index]
 	local line_position = info["Wavelength (m)"]
 	
+	local line_influence_diameter = info["Max influence radius"]
+	
 	--second_order_multiplier = 1.5 -- multiply influence diameter because influencing line might be influenced by another further away
-	local beginning = line_position - default_max_line_influence_radius * second_order_multiplier
-	local ending = line_position + default_max_line_influence_radius * second_order_multiplier
-	if forbid_lines_outside_range then -- TODO: check new code if always have to forbid
+	local beginning = line_position - line_influence_diameter * second_order_multiplier
+	local ending = line_position + line_influence_diameter * second_order_multiplier
+	if forbid_lines_outside_range then -- TODO: check new code if always must forbid
 		beginning = clip(beginning, cut_start, cut_end)
 		ending = clip(ending, cut_start, cut_end)
 	end
@@ -3532,8 +3751,8 @@ end
 
 -- Gather lines that are in the secondary active windows of lines linked to the main one
 -- Format: tbl[func_name][param_name] = true
-function gather_secondary_lines(linked_lines_list)
-	db("gather_secondary_lines", 3)
+function gather_secondary_lines_iterate(linked_lines_list)
+	db("gather_secondary_lines_iterate", 3)
 	
 	local lines_params_table = {}
 	
@@ -3567,6 +3786,34 @@ function gather_secondary_lines(linked_lines_list)
 	return lines_params_table
 end
 
+-- Gather lines that are in the secondary active window of the line linked to the main one
+-- Format: tbl[func_name][param_name] = true
+function gather_secondary_lines(line_idx, beginning2, ending2)
+	db("gather_secondary_lines", 3)
+	
+	local lines_params_table = {}
+	
+	-- Ignore linked lines which have had all of its parameters fitted already
+	if is_all_params_fitted(line_idx) then return lines_params_table end
+	
+	-- Gather lines in secondary line influence range
+	local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], beginning2, ending2) -- Format: tbl[line_index] = true
+	
+	-- Iterate over the lines in the secondary window
+	for line_index, bool in pairs(influenced_line_indices) do
+		
+		local line_name = lines_data[line_index].name
+		lines_params_table[line_name] = lines_params_table[line_name] or {}
+		
+		-- Iterate over parameters for that line and save the line-parameter combo (convert format for line activation and locking)
+		for parameter, tbl in pairs(lines_data[line_index].parameters) do
+			lines_params_table[line_name][parameter] = true
+		end
+	end
+	
+	return lines_params_table
+end
+
 -- Check if all parameters of a line have been fitted and therefore if the line is fitted
 function is_all_params_fitted(line_index)
 	local all_params_fitted = true
@@ -3590,7 +3837,7 @@ end
 
 
 -- Unlock existing lines or create a new line in dataset
-function activate_lines(lines_params_table, minimal_data_value, max_height_values)
+function activate_lines(lines_params_table)
 	db("activate_lines",2)
 	
 	-- Iterate over the lines
@@ -3715,7 +3962,11 @@ function lock_variable_save_errors(main_line_index, function_name, line_index, p
 		error_value = 0
 	
 	elseif var_obj:is_simple() then -- can extract error (simple or linked simple)
-		error_value = F:calculate_expr("$" ..root_var_name..".error")
+		
+		-- wrap because sometimes Fityk has a zeroed covariance matrix
+		error_value = wrapVerbose(function() return F:calculate_expr("$"..root_var_name..".error") end,
+		"ERROR: lock_variable_save_errors() | Failed to get $"..tostring(root_var_name).." variable error. main_line_index: "..tostring(main_line_index)
+		)
 	
 	else -- e.g. compound or linked but not simple
 		error_value = nil
@@ -3734,10 +3985,6 @@ function lock_variable_save_errors(main_line_index, function_name, line_index, p
 	
 	-- Register that the root variable has been fitted
 	fitted_variables[root_var_name] = true
-	
-	-- Register that this line and the parameter has been fitted
-	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
-	fitted_lines_params[function_name][param_name] = true
 	
 	-- Lock the variable
 	F:execute("$" ..root_var_name.. " = {$" ..root_var_name.. "}")
@@ -3789,6 +4036,9 @@ function select_active_points(beginning, ending)
 	-- Clip the points between observable spectrum
 	beginning = clip(beginning, startpoint, endpoint)
 	ending = clip(ending, startpoint, endpoint)
+	
+	-- No active datapoints
+	--if beginning == ending then return end
 	
 	F:execute("@0: A = x > "..tostring(beginning).." and x < "..tostring(ending))
 end
@@ -3906,10 +4156,16 @@ function create_dummy_function(line_index)
 		table.insert(parameter_names, "hwhm")
 	end
 	
-	-- Register its parameters as fitted
+	-- Register its parameters as fitted and root variables as fitted
 	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
 	for idx, parameter_name in ipairs(parameter_names) do
+		
+		-- Register its parameters as fitted
 		fitted_lines_params[function_name][parameter_name] = true
+		
+		-- Register its root variables as fitted
+		local direct_var_name = get_direct_variable_name(function_name, parameter_name)
+		fitted_variables[direct_var_name] = true
 	end
 	
 	-- if line is guessed without any active datapoints then there's error 
@@ -3919,108 +4175,70 @@ function create_dummy_function(line_index)
 	F:execute("F += %" ..function_name)
 end
 
---[[
--- If the line is too small then it is written as 0-height.
-function remove_invalid_line(line_index, root_variables, noise_stdev)
-	db("remove_invalid_line", 3)
-	
-	-- Get the min FWHM bound for the wavelength
-	local min_FWHM = min_FWHM_function(line_position)
-	
-	local breadth_multiplier = math.pi -- don't remember where it came
-	--local rectangle_width = gwidth / 1.2 * breadth_multiplier -- to hwhm and then get the rectangle width
-	local rectangle_width = min_FWHM / 2 * breadth_multiplier
-	local detection_sn_ratio = 2 -- required signal to noise ratio
-	local min_area = detection_sn_ratio * noise_stdev * rectangle_width -- get the rectangle area -- F:calculate_expr("x[1]-x[0]") --/ noise_stdev_calibration * detection_threshold_calibration -- minimum area of a detectable line
-	
-	local functions = F:get_components(0)
-	local fn = functions[line_index]
-	
-	if not ((fn.name == "bg") or (fn.name == "bg_local")) then -- not the constant
-		local area = fn:get_param_value("Area")
-		
-		if area <= min_area then -- line doesn't exist 
-			--F:execute("%"..tostring(functions[line_index].name)..".height = 0")
-			
-			-- Lock the parameters
-			F:execute("$height_variable_"..tostring(line_index).." = 0") -- write height as 0
-			
-			root_variables[line_index] = nil
-			
-			turn_into_dummy(line_index)
-		end
-	end
-end
 
--- If a line is too small then it is written as 0-height.
-function remove_invalid_lines(minimal_data_value)
-	db("remove_invalid_lines", 3)
-	
-	-- Get the min FWHM bound for the wavelength
-	local min_FWHM = min_FWHM_function(line_position)
-	
-	local functions = F:get_components(0)
-	--local noise = math.abs(F:calculate_expr("centile("..tostring(height_percentile_of_existing_lines)..", y if a)") - minimal_data_value) -- some percentile of all active data - min value of active data
-	
-	local breadth_multiplier = math.pi -- don't remember where it came
-	--local rectangle_width = gwidth / 1.2 * breadth_multiplier -- to hwhm and then get the rectangle width
-	local rectangle_width = min_FWHM / 2 * breadth_multiplier
-	local detection_sn_ratio = 2 -- required signal to noise ratio
-	local min_area = detection_sn_ratio * noise_stdev * rectangle_width -- get the rectangle area -- F:calculate_expr("x[1]-x[0]") --/ noise_stdev_calibration * detection_threshold_calibration -- minimum area of a detectable line
-	
-	
-	-- Iterates over spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local fn = functions[line_index]
-		if not (fn.name == "bg") then -- not the constant
-			local area = fn:get_param_value("Area")
-			
-			if area <= min_area then -- line doesn't exist 
-				--F:execute("%"..tostring(functions[line_index].name)..".height = 0")
-				
-				-- Lock the parameters
-				F:execute("$height_variable_"..tostring(line_index).." = 0") -- write height as 0
-				turn_into_dummy(line_index)
-			end
-		end
-	end
-end
---]]
-
--- Write weak lines as 0-height. This function is meant to be run after finishing with line fitting
-function nullify_lines()
+-- Turn weak lines into dummies. This function is meant to be run after finishing with line fitting
+function nullify_lines(polyline_values)
 	db("nullify_lines", 2)
 	
-	-- Iterates over all spectral lines
+	-- Iterates over all spectral lines and nullifies them
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		
-		-- Get the function object
-		local function_name = lines_data[line_index].name
-		local fn = F:get_function(function_name) -- line function
-		
-		-- Check if the function has height and center parameter 
-		local height, center
-		local status, err = pcall(function() 
-			height = fn:get_param_value("height")
-			center = fn:get_param_value("center") 
-		end)
-		
-		if height and center then
-			local noise_level = get_noise_estimate(center)
-			
-			-- Line is too weak and is influenced by noise too much
-			if height < (noise_level * noise_level_check_multiplier) then
-				turn_into_dummy(line_index)
-			end
-		end
+		nullify_line(line_index, polyline_values)
 	end
 end
 
+-- Turn weak line into dummy. This function is meant to be run after finishing with line fitting for the line in question
+function nullify_line(line_index, polyline_values)
+	db("nullify_line", 3)
+	
+	-- Skip linked lines
+	if is_linked_line(line_index) then return end
+	
+	-- Get function height and area
+	local function_name = lines_data[line_index].name
+	local fn = F:get_function(function_name) -- line function
+	local height, area = wrapSilent(function() return fn:get_param_value("height"), fn:get_param_value("Area") end)
+	
+	-- Weird line or error somewhere before
+	if (not height) or (not area) then return end
+	
+	-- Get the noise amplitude
+	local local_constant_height = polyline_values[line_index].height
+	local noise_height = math.max(local_constant_height, global_noise_height)
+	
+	-- Get the min FWHM bound for the wavelength
+	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
+	local min_FWHM = min_FWHM_function(line_position)
+	
+	-- Get noise area
+	local breadth_multiplier = math.pi -- don't remember where it came
+	--local rectangle_width = gwidth / 1.2 * breadth_multiplier -- to hwhm and then get the rectangle width
+	local rectangle_width = min_FWHM / 2 * breadth_multiplier
+	local noise_area = noise_height * rectangle_width -- get the rectangle area -- F:calculate_expr("x[1]-x[0]") --/ noise_stdev_calibration * detection_threshold_calibration -- minimum area of a detectable line
+	
+	-- Check if line area/height is stronger than noise threshold
+	local area_not_small = (area / noise_area) >= detection_sn_ratio_area
+	local height_not_small = (height / noise_height) >= detection_sn_ratio_height
+	if area_not_small or height_not_small then return end
+	
+	-- Line is below noise threshold, turn into dummy
+	turn_into_dummy(line_index)
+end
+
+
+-- If any of the parameters of this line are linked then return true
+function is_linked_line(line_index)
+	for param_name, param_tbl in pairs(lines_data[line_index].parameters) do
+		if param_tbl.type == "linked" then return true end
+	end
+	return false
+end
+
+--[[
 -- Estimate the local noise level as the average of global noise and polyline local height
 function get_noise_estimate(location)
 	local noise_level_constant = get_constant_noise_estimate(location)
 	
-	local noise_level = (noise_level_constant + noise_stdev) / 2
+	local noise_level = (noise_level_constant + global_noise_height) / 2
 	return noise_level
 end
 
@@ -4031,35 +4249,6 @@ function get_constant_noise_estimate(location)
 	local local_constant = bg_local_fn:value_at(location)
 	
 	return local_constant
-end
-
--- unlock the parameters of the function
---[[
-function unlock_parameters(fn_var_types)
-	db("unlock_parameters", 3)
-	
-	-- Iterate over root variables and unlock them, respecting the type of variable they were created as
-	for param_name, tbl in pairs(fn_var_types) do
-		local variable_names = tbl.names
-		local var_types = tbl.v_types
-		
-		-- iterate over parent variable names
-		for idx, variable_name in ipairs(variable_names) do
-			local variable_type
-			if type(var_types) == "table" then variable_type = var_types[idx]
-			else variable_type = var_types end
-			
-			-- The variable was already fitted in a linked function
-			if fitted_variables[variable_name] then
-				-- Do nothing
-			elseif variable_type == "simple" then
-				-- Unlock the parameter with its value
-				F:execute("$" ..variable_name.. " = ~{$" ..variable_name.. "}")
-			elseif (variable_type == "compound") then
-				printe("unlock_parameters() | function has double-compound variable: " .. variable_name)
-			end
-		end
-	end
 end
 --]]
 
@@ -4111,11 +4300,10 @@ function turn_into_dummy(line_index)
 	lines_data[line_index].type = "dummy"
 	
 	local fn = F:get_function(function_name) -- line function
-	--lines_data[line_index]["parameters"][param_name]["root_vars"]
 	
 	-- Iterate over parameters
 	for param_name, tbl in pairs(lines_data[line_index].parameters) do
-		local direct_var_name = fn:var_name(param_name)
+		local direct_var_name = get_direct_variable_name(function_name, param_name)
 		
 		-- Register all parameters as fitted
 		fitted_lines_params[function_name][param_name] = true
@@ -4147,7 +4335,7 @@ function turn_into_dummy(line_index)
 				-- extract function name and parameter
 				local func_name_ref, param_name_ref = separate_function_parameter(func_para_str)
 				
-				-- Links the current dummy
+				-- Links the current file that's now dummy
 				if func_name_ref == function_name then
 					linked_lines[line_name][para_name][func_para_str] = nil
 				end
@@ -4156,6 +4344,12 @@ function turn_into_dummy(line_index)
 	end
 end
 
+-- Get direct variable (not root)
+function get_direct_variable_name(function_name, param_name)
+	local fn = F:get_function(function_name)
+	local direct_var_name = fn:var_name(param_name)
+	return direct_var_name
+end
 
 
 ----------------------------------------------------------------------
@@ -4219,7 +4413,6 @@ function get_line_errors(line_index, errors, max_height_values, angle_errors)
 	
 	-- Pass local constant values on
 	errors.bg_local = angle_errors.bg_local
-	--F:calculate_expr("$" ..root_var_name..".error")
 	
 	local max_h = max_height_values[line_index] or 0
 	
@@ -4239,7 +4432,8 @@ function get_line_errors(line_index, errors, max_height_values, angle_errors)
 			error_value = lines_data[line_index]["parameters"][parameter_name]["root_vars"]["errors"][var_index] -- direct error
 		
 		elseif (parameter_type == "normal") then
-			error_value = calculate_normal_error_derivative(line_index, parameter_name, max_height_values) -- calculated complex error (default)
+			-- wrap saves if error is nil but script tries to calculate error through angle variable, fn still needs to execute to check for vars locked in input file
+			error_value = wrapSilent(calculate_normal_error_derivative, line_index, parameter_name, max_height_values) -- calculated complex error (default)
 		
 		else
 			printe("get_line_errors() | Parameter type is unconventional. parameter_type: "..tostring(parameter_type).."line_index: "..tostring(line_index))
@@ -4403,10 +4597,10 @@ function write_output(data_filename, spectrum_index, errors)
 	local file = io.open(output_path..output_data_name_nr,"a")
 	io.output(file)
 	
-	local chi2 = F:get_wssr(0) -- Weighted sum of squared residuals, a.k.a. chi^2
-	local dof 
-	pcall(function() dof = F:get_dof(0) end) -- Degrees of freedom, requires at least one simple variable (not locked)
-	local functions = F:get_components(0)
+	local chi2 = wrap(function() return F:get_wssr(0) end) -- Weighted sum of squared residuals, a.k.a. chi^2
+	local dof = wrapSilent(function() return F:get_dof(0) end) -- Degrees of freedom, requires at least one simple variable (not locked) -- TODO: save DOF for each window
+	
+	--local functions = F:get_components(0)
 
 	-- Writes dataset info
 	local series_id = compile_corrected_series_id()
@@ -4415,7 +4609,7 @@ function write_output(data_filename, spectrum_index, errors)
 	io.write(separator..chi2)
 	io.write(separator..tostring(dof))
 	io.write(separator..F:get_function("%bg"):get_param_value("a"))
-	io.write(separator..noise_stdev)
+	io.write(separator..global_noise_height)
 	io.write(separator..errors.constant_error)
 	
 	
@@ -4424,87 +4618,80 @@ function write_output(data_filename, spectrum_index, errors)
 	local FWHA_spectrum_index = F:get_dataset_count() - 1
 	F:execute("use @"..tostring(FWHA_spectrum_index)) -- use new dataset
 	F:execute("%FWHA = Constant(a = 0)") -- Create a dummy function
-	F:execute("F+= %FWHA") -- add the function to dataset functions
+	F:execute("F += %FWHA") -- add the function to dataset functions
 	
 	-- Copies wavelengths into an array
 	local wavelength_array = {}
 	
 	-- Iterates over all spectral lines
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		table.insert(wavelength_array, functions[line_index]:get_param_value("center"))
+		local function_name = lines_data[line_index].name
+		local fn = F:get_function(function_name)
+		table.insert(wavelength_array, fn:get_param_value("center"))
 	end	
 	
 	local maximum = 0 -- variable to check smallest wavelength index
 	
 	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do -- starts at 1, constant has index 0
-		
-		-- Finds the index of the next smallest wavelength
-		local line_index = 1
-		local mininum = infinity
-		for i = 1, tableLength(wavelength_array) do
-			if (wavelength_array[i] < mininum) and (wavelength_array[i] > maximum) then
-				mininum = wavelength_array[i]
-				line_index = i
-			end
-		end
-		maximum = wavelength_array[line_index] -- doesn't look for values smaller than this
-		
+	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+		local function_name = lines_data[line_index].name
+		local fn = F:get_function(function_name)
 		
 		-- Get variables
-		local height = functions[line_index]:get_param_value("height")
-		local center = functions[line_index]:get_param_value("center")
-		local area = functions[line_index]:get_param_value("Area")
-		local fwhm = functions[line_index]:get_param_value("FWHM")
+		local height = fn:get_param_value("height")
+		local center = fn:get_param_value("center")
+		local area = fn:get_param_value("Area")
+		local fwhm = fn:get_param_value("FWHM")
 		
 		
 		-- Get variables according to the fitted line type
 		local hwhm,gwidth,shape,GFWHM,LFWHM
 		local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
 		if function_type == "Voigt" then -- Voigt
-			gwidth = math.abs(functions[line_index]:get_param_value("gwidth"))
-			shape = math.abs(functions[line_index]:get_param_value("shape"))
-			GFWHM = functions[line_index]:get_param_value("GaussianFWHM")
-			LFWHM = functions[line_index]:get_param_value("LorentzianFWHM")
+			gwidth = math.abs(fn:get_param_value("gwidth"))
+			shape = math.abs(fn:get_param_value("shape"))
+			GFWHM = fn:get_param_value("GaussianFWHM")
+			LFWHM = fn:get_param_value("LorentzianFWHM")
 		elseif function_type == "VoigtFWHM" then -- VoigtFWHM
-			hwhm = math.abs(functions[line_index]:get_param_value("fwhm")) / 2 -- saves space and user happiness (output format doesn't change)
-			shape = math.abs(functions[line_index]:get_param_value("shape"))
+			hwhm = math.abs(fn:get_param_value("fwhm")) / 2 -- saves space and user happiness (output format doesn't change)
+			shape = math.abs(fn:get_param_value("shape"))
 		elseif function_type == "VoigtApparatus" then -- VoigtApparatus
-			gwidth = math.abs(functions[line_index]:get_param_value("gwidth"))
-			shape = math.abs(functions[line_index]:get_param_value("shape"))
+			gwidth = math.abs(fn:get_param_value("gwidth"))
+			shape = math.abs(fn:get_param_value("shape"))
 		else -- Gaussian or Lorentzian
-			hwhm = math.abs(functions[line_index]:get_param_value("hwhm"))
+			hwhm = math.abs(fn:get_param_value("hwhm"))
 		end
 		
 		local FWHA = get_FWHA(FWHA_spectrum_index, function_type, height, center, hwhm, gwidth, shape, fwhm) -- Full width at half area
 		
 		-- If there's no peak (peak height is 0) or width is 0 then all parameters are written ""
-		if (not height) or (height <= 0) or (gwidth and (gwidth == 0)) or (hwhm and (hwhm == 0)) then
-			io.write(string.rep(separator, 17)) -- 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
+		if (lines_data[line_index].type == "dummy") or (not height) or (height <= 0) then
+			io.write(string.rep(separator, 15)) -- 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones (+2 fields for local constant)
+		
 		else -- Else reads errors and writes peak info into output
 			-- values
-			io.write(separator..tostring(height))
-			io.write(separator..tostring(center))
-			io.write(separator..(tostring(hwhm) or ""))
-			io.write(separator..(tostring(gwidth) or ""))
-			io.write(separator..(tostring(shape) or ""))
-			io.write(separator..tostring(area))
-			io.write(separator..tostring(fwhm))
-			io.write(separator..tostring(FWHA))
-			io.write(separator..(tostring(GFWHM) or ""))
-			io.write(separator..(tostring(LFWHM) or ""))
+			io.write(separator..tostring(height or ""))
+			io.write(separator..tostring(center or ""))
+			io.write(separator..tostring(hwhm or ""))
+			io.write(separator..tostring(gwidth or ""))
+			io.write(separator..tostring(shape or ""))
+			io.write(separator..tostring(area or ""))
+			io.write(separator..tostring(fwhm or ""))
+			io.write(separator..tostring(FWHA or ""))
+			io.write(separator..tostring(GFWHM or ""))
+			io.write(separator..tostring(LFWHM or ""))
 			
 			-- standard errors
-			io.write(separator..tostring(errors.height[line_index]))
-			io.write(separator..tostring(errors.center[line_index]))
+			io.write(separator..tostring(errors.height[line_index] or ""))
+			io.write(separator..tostring(errors.center[line_index] or ""))
 			io.write(separator..tostring(errors.hwhm[line_index] or ""))
 			io.write(separator..tostring(errors.gwidth[line_index] or ""))
 			io.write(separator..tostring(errors.shape[line_index] or ""))
-			
-			-- Local constant
-			io.write(separator..(tostring(errors.bg_local.value[line_index]) or ""))
-			io.write(separator..(tostring(errors.bg_local.error[line_index]) or ""))
 		end
+		
+		-- Local constant, +2 fields
+		io.write(separator..tostring(errors.bg_local.value[line_index] or ""))
+		io.write(separator..tostring(errors.bg_local.error[line_index] or ""))
 	end
 	
 	F:execute("use @0") -- reset active dataset to default
@@ -4557,16 +4744,12 @@ function init_output()
 	io.write("All lines")
 	io.write(string.rep(separator.. "All lines", 6)) -- 6 values for general info
 	
-	-- Iterate over lines
-	if lines_info_filename and table_size then 
-		
-		-- Iterates over all spectral lines
-		for line_index, info in ipairs(lines_info[lines_info_filename]) do
-			local fn_type = lines_info[lines_info_filename][line_index]["function to fit"] -- line type
-			local fn_name = lines_data[line_index].name -- line name
-			local output_str = separator..tostring(line_index).." "..fn_name.." "..fn_type
-			io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
-		end
+	-- Iterates over all spectral lines
+	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+		local fn_type = lines_info[lines_info_filename][line_index]["function to fit"] -- line type
+		local fn_name = lines_data[line_index].name -- line name
+		local output_str = separator..tostring(line_index).." "..fn_name.." "..fn_type
+		io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
 	end
 	
 	io.write("\n")
@@ -4580,34 +4763,30 @@ function init_output()
 	io.write(separator .. "Global noise stdev")
 	io.write(separator .. "Global constant error")
 	
-	-- Write titles to the output
-	if lines_info_filename and table_size then 
+	-- Iterates over all spectral lines and writes titles to the output
+	for line_index, info in ipairs(lines_info[lines_info_filename]) do
 		
-		-- Iterates over all spectral lines
-		for line_index, info in ipairs(lines_info[lines_info_filename]) do
-			
-			io.write(separator.. "height")
-			io.write(separator.. "center")
-			io.write(separator.. "hwhm")
-			io.write(separator.. "gwidth")
-			io.write(separator.. "shape")
-			io.write(separator.. "Area")
-			io.write(separator.. "FWHM")
-			io.write(separator.. "FWHA")
-			io.write(separator.. "GaussianFWHM")
-			io.write(separator.. "LorentzianFWHM")
-			
-			-- Standard errors
-			io.write(separator.. "height error")
-			io.write(separator.. "center error")
-			io.write(separator.. "hwhm error")
-			io.write(separator.. "gwidth error")
-			io.write(separator.. "shape error")
-			
-			-- Local constant
-			io.write(separator.. "local constant")
-			io.write(separator.. "local constant error")
-		end
+		io.write(separator.. "height")
+		io.write(separator.. "center")
+		io.write(separator.. "hwhm")
+		io.write(separator.. "gwidth")
+		io.write(separator.. "shape")
+		io.write(separator.. "Area")
+		io.write(separator.. "FWHM")
+		io.write(separator.. "FWHA")
+		io.write(separator.. "GaussianFWHM")
+		io.write(separator.. "LorentzianFWHM")
+		
+		-- Standard errors
+		io.write(separator.. "height error")
+		io.write(separator.. "center error")
+		io.write(separator.. "hwhm error")
+		io.write(separator.. "gwidth error")
+		io.write(separator.. "shape error")
+		
+		-- Local constant
+		io.write(separator.. "local constant")
+		io.write(separator.. "local constant error")
 	end
 	
 	io.write("\n")
@@ -4756,44 +4935,60 @@ end
 -- Generate a polyline to simulate the fitted local constants. 
 -- This manipulation is done here instead of adding rectangle functions
 -- during data fitting because that could increase fitting time.
-function create_polyline_local_constant(polyline_values) -- TODO: polyline fitting and locking/unlocking instead of local constant
+function create_polyline_local_constant(polyline_values)
 	
 	-- Add a polyline (local constants) to raise the line functions back to original height. Alternative
 	-- is to use Rectangle functions.
-	local polyline_str = "%bg_local = Polyline("
+	local polyline_str = "%bg_local = Polyline(" .. tostring(-infinity) .. ",0"
 	
-	-- Sort polyline values by increasing start wavelengths
-	local function compare_start(a,b) return (a["start"] < b["start"]) end
-	table.sort(polyline_values, compare_start)
+	-- Sort polyline values by increasing start wavelengths -- they're saved in line_index order anyway
+	--local function compare_start(a,b) return (a["start"] < b["start"]) end
+	--table.sort(polyline_values, compare_start)
+	
+	-- Get step locations (wavelengths)
+	local locations = {}
 	
 	-- Construct polyline string
-	--local narrower_step = default_max_line_influence_radius / narrower_polyline_step -- many lines region overpopulates the polyline
 	for idx, value_tbl in ipairs(polyline_values) do
 		
-		-- Get the bondaries of previous and next steps
-		local end_prev = -infinity
-		local start_next = infinity
-		if idx > 1 then end_prev = polyline_values[idx - 1].ending end
-		if idx < #polyline_values then start_next = polyline_values[idx + 1].start end
+		-- Get boundaries of current window
+		local current_start = value_tbl.start
+		local current_end = value_tbl.ending
+		local current_center = (current_start + current_end) / 2
 		
-		-- if two steps overlap then take the center of these as boundary
-		local use_start = value_tbl.start
-		local use_end = value_tbl.ending
-		if use_start < end_prev then use_start = (use_start + end_prev) / 2 end
-		if use_end > start_next then use_end = (use_end + start_next) / 2 end
+		-- Get the bondaries of previous and next windows
+		local end_prev = polyline_values[idx - 1] and polyline_values[idx - 1].ending or -infinity
+		local center_prev = polyline_values[idx - 1] and (end_prev + polyline_values[idx - 1].start) / 2 or -infinity
+		local start_next = polyline_values[idx + 1] and polyline_values[idx + 1].start or infinity
+		local center_next = polyline_values[idx + 1] and (start_next + polyline_values[idx + 1].ending) / 2 or infinity
 		
-		if idx > 1 then polyline_str = polyline_str .. "," end  -- not 1st value 
-		polyline_str = polyline_str .. tostring(use_start) .. "," .. tostring(value_tbl.height)
-		polyline_str = polyline_str .. "," ..  tostring(use_end) .. "," .. tostring(value_tbl.height)
+		-- if two windows overlap then take the center of the centers of these as boundary (the windows might be different width)
+		local use_start = current_start
+		local use_end = current_end
+		if current_start < end_prev then use_start = (current_center + center_prev) / 2 end
+		if current_end > start_next then use_end = (current_center + center_next) / 2 end
 		
-		--polyline_str = polyline_str .. tostring(value_tbl.start + narrower_step) .. "," .. tostring(value_tbl.height)
-		--polyline_str = polyline_str .. "," ..  tostring(value_tbl.ending - narrower_step) .. "," .. tostring(value_tbl.height)
+		-- Initialize before first window
+		if idx == 1 then polyline_str = polyline_str .. "," .. tostring(use_start) .. ",0" end -- 0 height from -infinity to here
+		
+		-- Fill in the gap between the windows
+		if current_start > end_prev then
+			polyline_str = polyline_str .. "," .. tostring(end_prev) .. ",0"
+			polyline_str = polyline_str .. "," .. tostring(current_start) .. ",0"
+		end
+		
+		-- Draw the current window
+		polyline_str = polyline_str .. "," .. tostring(use_start) .. "," .. tostring(value_tbl.height)
+		polyline_str = polyline_str .. "," .. tostring(use_end) .. "," .. tostring(value_tbl.height)
+		
+		-- Finalize after last window
+		if idx == #polyline_values then polyline_str = polyline_str .. "," .. tostring(use_end) .. ",0" end -- 0 height from here to infinity
 	end
 	
 	-- Finalize polyline string and execute
-	polyline_str = polyline_str .. ")"
+	polyline_str = polyline_str .. "," .. tostring(infinity) .. ",0)"
 	F:execute(polyline_str)
-	F:execute("F += %bg_local")
+	--F:execute("F += %bg_local") -- not to use if local constant isn't deleted directly after every fitting
 end
 
 
@@ -4802,17 +4997,75 @@ end
 -------------------------------------------------------------------------------------------------------------
 
 -- prints if debug mode is active. The lower the priority the sooner it's printed.
+-- If the debug message gets repeated multiple times then print the number of repeats
+debug_message = nil
+debug_count = 1
 function db(something, priority)
 	priority = priority or 1 -- defaults to 1
+	
+	-- Message is to be printed
 	if (debug_mode >= priority) then
-		printTable(something)
+		
+		-- Print each message separately
+		if not debug_print_message_summary then
+			printTable(something)
+			return
+		end
+		
+		-- Same message as last time
+		if something == debug_message then
+			debug_count = debug_count + 1
+		
+		-- New message
+		else
+			debug_message = something
+			debug_count = 1
+			
+			-- Print new message in case this is the last debug message and there is no new iteration (message and same message with number of repeats on next line)
+			printTable(something)
+			
+			-- Print the last message and number of times it was run
+			if debug_count > 1 then
+				printTable(something.." (x"..tostring(debug_count)..")")
+			end
+		end
 	end
 end
 
 -- Wraps provided fn in pcall, catches the error and prints it
-function wrap(fn)
-	local status, err = pcall(fn)
-	if not status then print(tostring(err)) end
+function wrap(fn, ...)
+	local results = table.pack(pcall(fn, ...))
+	local status = results[1]
+	if status then -- return all values except the first one (which is the success flag)
+        return table.unpack(results, 2, results.n)
+	else
+		print(tostring(results[2])) -- print the error message
+    end
+end
+
+-- Wraps provided fn in pcall, doesn't print the error
+function wrapSilent(fn, ...)
+	local results = table.pack(pcall(fn, ...))
+	if results[1] then
+        return table.unpack(results, 2, results.n) -- return all values except the first one (which is the success flag)
+    end
+end
+
+-- Wraps provided fn in pcall, catches the error and prints it with user defined string
+function wrapVerbose(fn, extra_str, ...)
+	local results = table.pack(pcall(fn, ...))
+	local status = results[1]
+	
+	-- return all values except the first one (which is the success flag)
+	if status then
+        return table.unpack(results, 2, results.n)
+    
+	-- return false and the error message
+	else
+        local print_str = extra_str and tostring(extra_str) or ""
+		print_str = print_str.." Error message: "..tostring(results[2])
+		print(print_str)
+    end
 end
 
 -- Gets real table length
@@ -4883,6 +5136,11 @@ end
 -- Strip given pattern from the string
 function strip_string(str, pattern)
 	return string.gsub(str, pattern, "")
+end
+
+-- LUA can't handle no break space symbols
+function strip_nobreakspace(s)
+	return strip_string(value, "\194\160") -- LUA's no break space: "\194\160"
 end
 
 --[[
@@ -5369,49 +5627,117 @@ function sort_numerical_filenames_fn(filename1,filename2)
 	return filename1_nr < filename2_nr
 end
 
+-- Chcecks lazily if the table is empty
+function is_table_empty(tbl)
+	for key, val in pairs(tbl) do
+		return false
+	end
+	return true
+end
+
+
 -- Prints every key and value of table
-function printTable1(table)
-	if type(table) == "table" then
-		for key,value in pairs(table) do
-			print("Key:" .. tostring(key) .. " ; Value:" .. tostring(value))
+function printTableShallow(tbl)
+	if type(tbl) == "table" then
+		for key, value in pairs(tbl) do
+			if type(key) == "string" then key = "'"..key.."'"end
+			if type(value) == "string" then value = "'"..value.."'"end
+			print("Key: " .. tostring(key) .. " ; Value: " .. tostring(value))
 		end
 	else
-		print(tostring(table))
+		print(tostring(tbl))
 	end
+end
+
+-- Make entire table into string recursively, not the prettiest formatting
+function strTableDirty(tbl)
+	if type(tbl) == 'table' then
+		local s = '{ '
+		for k,v in pairs(tbl) do
+			if type(k) ~= 'number' then k = '"'..k..'"' end
+			s = s .. '['..k..'] = ' .. strTable(v) .. ','
+		end
+		return s .. '} '
+	else
+		return tostring(tbl)
+	end
+end
+
+-- Make entire table into string recursively. Modified from https://gist.github.com/dpino/af37d70554d157bbee289f489945cce5 (print_r.lua)
+function strTable(tbl, indent_start, indent_original, indent_addition)
+	indent_start = indent_start or ""
+	indent_original = indent_original or "    "
+	indent_addition = indent_addition or indent_original
+	
+	local function sub_strTable(tbl, indent)
+		local level_str = ""
+		
+		if (type(tbl) == "table") then
+			for pos, val in pairs(tbl) do
+				if (type(pos) == "string") then
+					pos = "'"..tostring(pos).."'"
+				end
+				
+				if (type(val) == "table") then
+					if is_table_empty(val) then
+						level_str = level_str..indent.."["..pos.."] = {}"
+					else
+						level_str = level_str..indent.."["..pos.."] = {"
+						level_str = level_str..sub_strTable(val, indent..indent_addition)
+						level_str = level_str..indent.."}"
+					end
+				
+				elseif (type(val) == "string") then
+					level_str = level_str..indent.."["..pos.."] = '"..val.."'"
+				else
+					level_str = level_str..indent.."["..pos.."] = "..tostring(val)
+				end
+			end
+		else
+			level_str = level_str..indent..tostring(tbl)
+		end
+		
+		return level_str
+	end
+	
+	-- It's table, start recursion
+	local str = ""
+	if (type(tbl) == "table") then
+		str = str.."{"
+		str = str..sub_strTable(tbl, indent_start..indent_original, str)
+		str = str..indent_start.."}"
+	else
+		str = tostring(tbl)
+	end
+	
+	return str
+end
+
+-- Make entire table into string recursively in a flat format
+function strTableFlat(tbl)
+	return strTable(tbl, "", " ", "")
 end
 
 -- Print entire table contents
-function printTable(table)
-	print(strTable(table))
+function printTable(tbl)
+	print(strTable(tbl, "\n", "    "))
 end
 
--- Make entire table into string recursively
-function strTable(table)
-   if type(table) == 'table' then
-      local s = '{ '
-      for k,v in pairs(table) do
-         if type(k) ~= 'number' then k = '"'..k..'"' end
-         s = s .. '['..k..'] = ' .. strTable(v) .. ','
-      end
-      return s .. '} '
-   else
-      return tostring(table)
-   end
+-- Print entire table contents in the most compact way
+function printTableFlat(tbl)
+	print(strTableFlat(tbl))
 end
 
--- LUA can't handle no break space symbols
-function trim_nobreakspace(s)
-	return s:match"^[%s\160]*(.-)[%s\160]*$"
-end
 
 -- Print error log (usually uncertain data)
+--last_error_msg = nil -- Check previous error message, so that there wouldn't be 100 identical errors in a row.
 function printe(str, priority)
 	priority = priority or -1 -- by default, print errors even when debugging isn't on
 
-	if str ~= last_error_msg then -- print only if it's a new error
+	--if str ~= last_error_msg then -- print only if it's a new error
 		db("ERROR: " .. str, priority)
-		last_error_msg = str
-	end
+		--last_error_msg = str
+	--end
 end
 
 -- Check if file exists. Returns false for a directory
