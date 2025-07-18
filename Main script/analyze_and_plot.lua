@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.2
+-- Script version: 4.3
 -- Author: Jasper Ristkok
 
 --[[
@@ -34,7 +34,7 @@ MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break
 
 ----------------------------------------------------------------------
 -- CHANGE CONSTANTS BELOW!
--- Also change user constants in user_constants.lua in info_folder
+-- Also change user constants in _user_constants.lua in info_folder
 ----------------------------------------------------------------------
 -- What is system path for input folder?
 -- Input folders and files in them have to exist beforehand. Fityk really doesn't like special characters anywhere.
@@ -42,7 +42,7 @@ MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break
 -- Windows path can be both with \ or /. However, \ is special in LUA strings, so it needs to be \\.
 --work_folder = "D:/Research_analysis/Projects/2024_JET/Lab_comparison_test/Data_processing/Stage_1/"
 work_folder = "E:/Research_analysis/2024.03 VTT JET/Test/"
-info_folder = work_folder .. "Input_info/" -- has to contain user_constants.lua
+info_folder = work_folder .. "Input_info/" -- has to contain "_user_constants.lua"
 ----------------------------------------------------------------------
 -- CHANGE CONSTANTS ABOVE!
 
@@ -56,7 +56,7 @@ info_folder = work_folder .. "Input_info/" -- has to contain user_constants.lua
 infinity = 1.79769e308 -- Fityk doesn't like math.huge
 infinitesimal = 1e-18 -- a very small value but still in the ballpark of other Fityk variables
 
--- Constants from user_constants.lua in info_folder
+-- Constants from _user_constants.lua in info_folder
 --[[
 	input_path
 	output_path
@@ -89,7 +89,6 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 	gain_functions -- table of functions
 	
 	forbid_lines_outside_range
-	apparatus_fn_fwhm
 	apparatus_function_fwhm -- function
 	min_FWHM_function -- function
 	default_max_line_influence_radius
@@ -182,7 +181,9 @@ fitted_lines_params = {}
 -- Format: tbl[variable_name] = true
 fitted_variables = {}
 
-
+-- Hold a table of error strings (as key) to print if a line fitting failed for a specific line only once
+-- during the experiment series. If the fit fails systematically then the errors would clog the log.
+series_fit_errors = {}
 
 
 -------------------------------------------------------------------------------------------------------------
@@ -190,13 +191,13 @@ fitted_variables = {}
 -------------------------------------------------------------------------------------------------------------
 -- Loads data from files into memory, finds defined peaks, fits them, exports the data and plots the graphs.
 function main_program()
-	if not file_exists(info_folder.."user_constants.lua") then
-		printe("main_program() | user_constants.lua is not in info folder. info_folder: "..info_folder)
+	if not file_exists(info_folder.."_user_constants.lua") then
+		printe("main_program() | _user_constants.lua is not in info folder. info_folder: "..info_folder)
 		return
 	end
 	
 	-- Read in user constants from separate script (separate for reproducibility of analysis)
-	F:execute("exec \'"..info_folder.."user_constants.lua\'")
+	F:execute("exec \'"..info_folder.."_user_constants.lua\'")
 	
 	-- Create stopscript in info_folder if it doesn't exist, empty it if it does.
 	initialize_stopscript()
@@ -400,16 +401,16 @@ function load_info()
 		load_pixel_info(filename) -- Load all info from that file
 	end
 	
-	-- Fill in fields which didn't have a cloumn in input info
-	validate_pixel_info()
+	-- Fill in fields which didn't have a column in input info
+	finalize_pixel_info()
 	
 	-- Iterate over files containing pixel info
 	for i,filename in ipairs(lines_files) do
 		load_lines_info(filename) -- Load all info from that file
 	end
 	
-	-- Fill in fields which didn't have a cloumn in input info
-	validate_lines_info()
+	-- Fill in fields which didn't have a column in input info
+	finalize_lines_info()
 	
 	-- Iterate over files containing spectra info
 	for i,filename in ipairs(spectrum_files) do
@@ -417,7 +418,7 @@ function load_info()
 	end
 	
 	-- Fill in fields which didn't have a cloumn in input info
-	validate_spectra_info()
+	finalize_spectra_info()
 end
 
 -- Read data from Pixel_info*.csv file into LUA pixel_info table
@@ -457,10 +458,7 @@ function load_pixel_info(filename)
 				printe("load_pixel_info() | No Measured unit column in file " .. filename)
 				return 
 			end
-			
-			-- Add 2 keys that combine experiment/camera settings for pixel-wise correction
-			pixel_info[filename]["pixel_multipliers"] = {}
-			pixel_info[filename]["pixel_additives"] = {}
+		
 		else
 			-- Iterate over csv values in line
 			for i=1, tableLength(values) do
@@ -492,12 +490,6 @@ function load_pixel_info(filename)
 				end
 			end
 			
-			-- Add 2 keys that combine experiment/camera settings for pixel-wise correction
-			local multiplier = pixel_info[filename]["Sensitivity"][pixel_index] * pixel_info[filename]["Additional multiplier"][pixel_index]
-			local additive = pixel_info[filename]["Additional additive"][pixel_index]
-			pixel_info[filename]["pixel_multipliers"][pixel_index] = multiplier
-			pixel_info[filename]["pixel_additives"][pixel_index] = additive
-			
 			pixel_index = pixel_index + 1 -- increment only if pixel had necessary info
 		end
 		::load_pixel_info_continue::
@@ -528,8 +520,37 @@ function check_pixel_info_value(title, value, filename, pixel_index)
 end
 
 -- Fix empty values and generate missing fields
-function validate_pixel_info()
-	db("validate_pixel_info",5)
+function finalize_pixel_info()
+	db("finalize_pixel_info", 1)
+	
+	-- Iterate over pixel info in every Pixel_info*.csv file
+	for filename, file_data in pairs(pixel_info) do
+		
+		-- Iterate over pixel_info columns, fix empty values and generate missing fields
+		validate_pixel_info(filename)
+		
+		
+		-- Iterate over the pixels and add 2 more keys that combine experiment/camera settings for pixel-wise correction
+		pixel_info[filename]["pixel_multipliers"] = {}
+		pixel_info[filename]["pixel_additives"] = {}
+		for pixel_index = 1, #file_data["Measured unit"] do
+			
+			-- Get values of intensity correction fields or get the default value if fields don't exist
+			local sensitivity = pixel_info[filename]["Sensitivity"][pixel_index]
+			local extra_mult = pixel_info[filename]["Additional multiplier"][pixel_index]
+			local additive = pixel_info[filename]["Additional additive"][pixel_index]
+			
+			-- Add 2 keys that combine experiment/camera settings for pixel-wise correction
+			pixel_info[filename]["pixel_multipliers"][pixel_index] = sensitivity * extra_mult
+			pixel_info[filename]["pixel_additives"][pixel_index] = additive
+		end
+	end
+end
+
+-- Fix empty values and generate missing fields
+function validate_pixel_info(filename)
+	db("validate_pixel_info", 5)
+	
 	local default_values = {
 		["Measured unit"] = nil,
 		["Wavelength (m)"] = nil, --pixel_info[filename]["Measured unit"][pixel_index],
@@ -538,39 +559,43 @@ function validate_pixel_info()
 		["Additional additive"] = 0
 	}
 	
-	-- Iterate over pixel info in every Pixel_info*.csv file
-	for filename, file_data in pairs(pixel_info) do
+	-- Iterate over pixel_info columns
+	local file_data = pixel_info[filename]
+	for field, default_value in pairs(default_values) do
 		
-		-- Iterate over pixel_info columns
-		for field, default_value in pairs(default_values) do
-			
-			if field == "Measured unit" then goto validate_pixel_continue end
-			
-			-- Generate missing sub-table
-			if not file_data[field] then
-				pixel_info[filename][field] = {}
-				
-				db("validate_pixel_info() | Pixel_info input didn't contain " .. tostring(field) .. "column in " .. tostring(filename) .. " file", 0)
+		if field == "Measured unit" then
+			if (not pixel_info[filename]["Measured unit"]) then -- Flawed file, delete it from pixel_info
+				pixel_info[filename] = nil
+				printe("validate_pixel_info() | File didn't contain \"Measured unit\" column. filename: "..tostring(filename))
+				return
 			end
-			
-			-- Iterate over all pixels (different input files might have different amount of pixels)
-			for pixel_index = 1, #file_data["Measured unit"] do
-				
-				-- Generate missing value from default values
-				if not file_data[field][pixel_index] then
-					
-					if field == "Wavelength (m)" then -- take value from Measured unit column
-						pixel_info[filename][field][pixel_index] = pixel_info[filename]["Measured unit"][pixel_index]
-					else -- take pre-defined constant value
-						pixel_info[filename][field][pixel_index] = default_value
-					end
-					
-					db("validate_pixel_info() | Pixel_info input didn't contain " .. tostring(field) .. "column in " .. tostring(filename) .. " file for px " .. tostring(pixel_index), 0)
-				end
-			end
-			
-			::validate_pixel_continue::
+			goto validate_pixel_continue
 		end
+		
+		-- Generate missing sub-table
+		if not file_data[field] then
+			pixel_info[filename][field] = {}
+			
+			printe("validate_pixel_info() | Pixel_info input didn't contain " .. tostring(field) .. "column in " .. tostring(filename) .. " file", 0)
+		end
+		
+		-- Iterate over all pixels (different input files might have different amount of pixels)
+		for pixel_index = 1, #file_data["Measured unit"] do
+			
+			-- Generate missing value from default values
+			if not file_data[field][pixel_index] then
+				
+				if field == "Wavelength (m)" then -- take value from Measured unit column
+					pixel_info[filename][field][pixel_index] = pixel_info[filename]["Measured unit"][pixel_index]
+				else -- take pre-defined constant value
+					pixel_info[filename][field][pixel_index] = default_value
+				end
+				
+				printe("validate_pixel_info() | Pixel_info input didn't contain " .. tostring(field) .. "column in " .. tostring(filename) .. " file for px " .. tostring(pixel_index), 0)
+			end
+		end
+		
+		::validate_pixel_continue::
 	end
 end
 
@@ -617,7 +642,7 @@ function load_lines_info(filename)
 			end
 			
 			-- Remove lines that aren't for fitting or are missing critical data
-			if (lines_info[filename][line_index]["To fit (1/0)"] ~= 1) or (not lines_info[filename][line_index]["Wavelength (m)"]) then
+			if (lines_info[filename][line_index]["To fit (1/0)"] == 0) or (not lines_info[filename][line_index]["Wavelength (m)"]) then
 				lines_info[filename][line_index] = nil
 			else -- line is saved for fitting, increment index
 				line_index = line_index + 1
@@ -649,18 +674,18 @@ end
 function check_line_info_value(title, value)
 	db("check_line_info_value",5)
 	local default_values = {
-		["To fit (1/0)"] = 1, -- important
-		["Fit priority (1 is first)"] = 1,
 		["Wavelength (m)"] = nil, -- important
-		["function to fit"] = "Voigt",
+		["Identificator"] = "_",
+		["Function to fit"] = "Voigt",
+		["To fit (1/0)"] = 1, -- line is used by default if the field is empty
+		["Fit priority (1 is first)"] = 1,
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity, -- almost infinity
-		["Identificator"] = "_",
-		["Max influence radius"] = default_max_line_influence_radius,
+		["Max influence radius (m)"] = default_max_line_influence_radius,
 		["Linked variables"] = nil
 	}
 	
-	if (title == "function to fit") then -- function type can be string
+	if (title == "Function to fit") then -- function type can be string
 		if tonumber(value) then -- it's a number
 			if (value == "0") then value = "Voigt"
 			elseif (value == "1") then value = "Gaussian"
@@ -693,42 +718,109 @@ end
 
 
 -- Fix empty values and generate missing fields
-function validate_lines_info()
-	db("validate_lines_info",5)
-	local default_values = {
-		["To fit (1/0)"] = 1,
-		["Fit priority (1 is first)"] = 1,
-		["Wavelength (m)"] = nil,
-		["function to fit"] = "Voigt",
-		["Max position shift (m)"] = 0,
-		["Max line fwhm (m)"] = infinity,
-		["Identificator"] = "_",
-		["Max influence radius"] = default_max_line_influence_radius,
-		["Link parameters"] = nil
-	}
+function finalize_lines_info()
+	db("finalize_lines_info", 1)
 	
 	-- Iterate over lines info in every Lines_info*.csv file
 	for filename, file_data in pairs(lines_info) do
 		
-		-- Iterate over all lines (different input files might have different amount of lines)
-		for line_index = 1, #file_data do
+		-- Iterate over all lines, fix empty values and generate missing fields
+		validate_lines_info(filename)
 		
-			-- Iterate over lines_info columns
-			for field, default_value in pairs(default_values) do
+		
+		-- iterate over lines again to check for actual influence range, considering other lines too
+		for main_line_index = 1, #file_data do
 			
-				if field == "Wavelength (m)" then goto validate_lines_continue end
-				
-				-- Generate missing value from default values
-				if not lines_info[filename][line_index][field] then
-					lines_info[filename][line_index][field] = default_value
-					
-					db("validate_lines_info() | Lines_info input didn't contain " .. tostring(field) .. "column for line idx " .. tostring(line_index) .. " in " .. tostring(filename) .. " file", 0)
-				end
-			end
+			-- Add 1 key that describes which line indices influence the current line
+			lines_info[filename][main_line_index]["Influencing_lines"] = {}
 			
-			::validate_lines_continue::
+			local left_bound, right_bound = get_influence_range_bounds(filename, main_line_index)
+			lines_info[filename][main_line_index]["Influencing_lines"]["left"] = left_bound
+			lines_info[filename][main_line_index]["Influencing_lines"]["right"] = right_bound
 		end
 	end
+end
+
+-- Fix empty values and generate missing fields
+function validate_lines_info(filename)
+	db("validate_lines_info", 5)
+	
+	local default_values = {
+		["Wavelength (m)"] = nil, -- important
+		["Identificator"] = "_",
+		["Function to fit"] = "Voigt",
+		["To fit (1/0)"] = 1, -- line is used by default if the field is empty
+		["Fit priority (1 is first)"] = 1,
+		["Max position shift (m)"] = 0,
+		["Max line fwhm (m)"] = infinity, -- almost infinity
+		["Max influence radius (m)"] = default_max_line_influence_radius,
+		["Linked variables"] = nil
+	}
+	
+	-- Iterate over all lines (different input files might have different amount of lines)
+	for line_index = 1, #lines_info[filename] do
+	
+		-- Iterate over lines_info columns
+		for field, default_value in pairs(default_values) do
+			
+			-- Generate missing value from default values
+			if (field ~= "Wavelength (m)") and (not lines_info[filename][line_index][field]) then
+				lines_info[filename][line_index][field] = default_value
+				
+				db("validate_lines_info() | Lines_info input didn't contain " .. tostring(field) .. "column for line idx " .. tostring(line_index) .. " in " .. tostring(filename) .. " file", 0)
+			end
+		end
+	end
+end
+
+
+-- Check for all lines and return the left and right bound for the active window for current line,
+-- so that all lines that influence the current one are in the range. It's advisable to input larger 
+-- "Max influence radius (m)" for very strong lines, so that weak lines far away account for that line.
+-- This function makes filling Lines_info*.csv easier, since you only need to consider the line in question's 
+-- width when filling "Max influence radius (m)" field (unless it's a very strong line).
+function get_influence_range_bounds(filename, main_line_index)
+	db("get_influence_range_bounds", 5)
+	
+	local file_table = lines_info[filename]
+	
+	local main_wl = file_table[main_line_index]["Wavelength (m)"]
+	
+	-- Account for line shift
+	local main_shift = file_table[main_line_index]["Max position shift (m)"]
+	local main_radius = file_table[main_line_index]["Max influence radius (m)"]
+	local main_influence = main_shift + main_radius
+	
+	-- Default values if no other line influences
+	-- Otherwise gets the widest range out of all influencing lines
+	local left_bound = main_wl - main_influence
+	local right_bound = main_wl + main_influence
+	
+	-- iterate over all lines and check which lines influence the current one
+	for other_line_index = 1, #file_table do 
+		if main_line_index ~= other_line_index then -- skip the same line
+			
+			local second_wl = file_table[other_line_index]["Wavelength (m)"]
+			
+			-- Account for line shift
+			local second_shift = file_table[other_line_index]["Max position shift (m)"]
+			local second_radius = file_table[other_line_index]["Max influence radius (m)"]
+			local second_influence = second_shift + second_radius
+			
+			-- Check if secondary line influences main line
+			local simple_range = main_influence + second_influence -- alternative situation if second line had 0 influence range
+			local is_influencing = math.abs(second_wl - main_wl) <= simple_range -- lines are close enough for their ranges to touch
+			
+			-- Save the active window wavelength bounds for the main line
+			if is_influencing then
+				-- gets widest range out of all influencing lines
+				left_bound = math.min(left_bound, second_wl - second_influence)
+				right_bound = math.max(right_bound, second_wl + second_influence)
+			end
+		end
+	end
+	
+	return left_bound, right_bound
 end
 
 --[[
@@ -749,7 +841,8 @@ end
 -- Reorder, so that filename is the key to the rest of the info
 function load_spectra_info(filename,pixel_files,lines_files)
 	db("load_spectra_info",4)
-	-- Iterate over lines
+	
+	-- Iterate over lines in the file
 	local titles
 	for line in io.lines(info_folder .. filename) do
 		
@@ -787,14 +880,6 @@ function load_spectra_info(filename,pixel_files,lines_files)
 					spectra_info[data_filename][title] = check_info_value(title, values[i]) -- save data in table with the key being the title
 				end
 			end
-			
-			-- Add 2 keys that combine experiment/camera settings for spectrum-wise correction
-			local additive = spectra_info[data_filename]["Additional additive"]
-			local multiplier = 1 / spectra_info[data_filename]["Nr. of spectra accumulations"] / 
-				actual_gain(spectra_info[data_filename]["Camera pre amplification"], spectra_info[data_filename]["Camera gain"]) / 
-				spectra_info[data_filename]["Camera gate width (s)"] / spectra_info[data_filename]["Additional multiplier"]
-			spectra_info[data_filename]["spectrum_additive"] = additive
-			spectra_info[data_filename]["spectrum_multiplier"] = multiplier
 		end
 		
 		::load_spectra_info_continue::
@@ -806,7 +891,7 @@ end
 
 -- gets the right gain function based on pre amplification setting and returns the multiplier for y-axis correction.
 function actual_gain(pre_amp, gain)
-	return gain_functions[pre_amp](gain) -- table comes from user_constants.lua
+	return gain_functions[pre_amp](gain) -- table comes from _user_constants.lua
 end
 
 
@@ -818,11 +903,11 @@ function check_info_value(title, value)
 		["Pixel correction filename"] = nil, -- semi-important
 		["Lines filename"] = nil, -- semi-important
 		["Background filename"] = nil,
+		["Series length"] = nil, -- semi-important
 		["Nr. of spectra accumulations"] = 1,
 		["Camera pre amplification"] = 1,
 		["Camera gain"] = 0,
 		["Camera gate width (s)"] = 1,
-		["Series length"] = nil,
 		["Additional multiplier"] = 1,
 		["Additional additive"] = 0	
 	}
@@ -855,8 +940,29 @@ function check_info_value(title, value)
 end
 
 -- Fix empty values and generate missing fields
-function validate_spectra_info()
-	db("validate_spectra_info",5)
+function finalize_spectra_info()
+	db("finalize_spectra_info", 1)
+	
+	-- Iterate over spectra_info
+	for data_filename,_ in pairs(spectra_info) do
+		
+		-- Fix empty values and generate missing fields
+		validate_spectra_info(data_filename)
+		
+		-- Add 2 keys that combine experiment/camera settings for spectrum-wise correction
+		local additive = spectra_info[data_filename]["Additional additive"]
+		local multiplier = 1 / spectra_info[data_filename]["Nr. of spectra accumulations"] / 
+			actual_gain(spectra_info[data_filename]["Camera pre amplification"], spectra_info[data_filename]["Camera gain"]) / 
+			spectra_info[data_filename]["Camera gate width (s)"] / spectra_info[data_filename]["Additional multiplier"]
+		spectra_info[data_filename]["spectrum_additive"] = additive
+		spectra_info[data_filename]["spectrum_multiplier"] = multiplier
+	end
+end
+
+-- Fix empty values and generate missing fields
+function validate_spectra_info(data_filename)
+	db("finalize_spectra_info", 1)
+	
 	local default_values = {
 		["Filename"] = nil,
 		["Pixel correction filename"] = nil,
@@ -871,23 +977,15 @@ function validate_spectra_info()
 		["Additional additive"] = 0	
 	}
 	
-	-- Iterate over spectra_info
-	for data_filename,_ in pairs(spectra_info) do
+	-- Iterate over spectra_info columns
+	for field, default_value in pairs(default_values) do
 		
-		-- Iterate over spectra_info columns
-		for field, default_value in pairs(default_values) do
-		
-			if field == "Filename" then goto validate_spectra_continue end
+		-- Generate missing value from default values
+		if (field ~= "Filename") and (not spectra_info[data_filename][field]) then
+			spectra_info[data_filename][field] = default_value
 			
-			-- Generate missing value from default values
-			if not spectra_info[data_filename][field] then
-				spectra_info[data_filename][field] = default_value
-				
-				db("validate_spectra_info() | Spectra_info input didn't contain " .. tostring(field) .. "column for " .. tostring(data_filename) .. " file", 0)
-			end
+			db("validate_spectra_info() | Spectra_info input didn't contain " .. tostring(field) .. "column for " .. tostring(data_filename) .. " file", 0)
 		end
-		
-		::validate_spectra_continue::
 	end
 end
 
@@ -1066,9 +1164,6 @@ function process_data_series(data_filename, experiment_check)
 	-- Skip processing background files. Background correction is done before pixel- and file-wise corrections, so we don't even need correction.
 	if (spectra_info[data_filename]["Background filename"] == "Background_info") then return end
 	
-	-- Get the lines_info_filename and write it into the global variable
-	get_lines_info_filename(data_filename)
-	
 	-- Collect the files in Input_data_corrected (corrected spectra) folder
 	local pattern = compile_corrected_filename_pattern()
 	local patterns_or = pattern
@@ -1206,6 +1301,9 @@ function process_data_series(data_filename, experiment_check)
 	end
 	
 	--check_output_paths() -- avoid overwriting previous output, create one output for every series
+	
+	-- Get the lines_info_filename and write it into the global variable
+	get_lines_info_filename(data_filename)
 	
 	-- Iterate over spectra in series and process them one by one
 	for current_spectrum_index = start_ind, end_ind do
@@ -1371,6 +1469,9 @@ function reset_series()
 	
 	-- Resets all Fityk-side info (not LUA-side, that still holds all necessary info)
 	reset_fityk()
+	
+	-- Reset global variables
+	series_fit_errors = {}
 end
 
 -- Reset stuff for each spectrum
@@ -1432,8 +1533,9 @@ function get_lines_info_filename(data_filename)
 		local lines_files = {}
 		local has_no_filename = false -- true if any series doesn't have Lines filename defined (and isn't sole file in folder)
 		for series_filename, info in pairs(spectra_info) do
-			lines_files[info["Lines filename"]] = true
-			has_no_filename = has_no_filename or (not info["Lines filename"])
+			local defined_filename = info["Lines filename"]
+			if defined_filename then lines_files[defined_filename] = true end
+			has_no_filename = has_no_filename or (not defined_filename)
 		end
 		
 		-- not only one lines file specified for all series, find longest list from all files in input info folder
@@ -1462,42 +1564,49 @@ function get_lines_info_filename(data_filename)
 	
 	-- Iterate over potential files and check if their contents match (wavelengths and identificator)
 	local files_are_different = false
-	local wavelengths, ids
-	for _, filename in ipairs(potential_filenames) do
+	if tableLength(potential_filenames) > 1 then
 		
-		-- Iterate over lines and check if the files match
-		for line_index, info in ipairs(lines_info[filename]) do
-				
-			-- Check if the lines in different files match
-			if not files_are_different then -- lazy match
-				
-				-- Check lengths
-				if wavelengths and (tableLength(info["Wavelength (m)"]) ~= tableLength(wavelengths)) then
-					files_are_different = true
-				elseif ids and (tableLength(info["Identificator"]) ~= tableLength(ids)) then
-					files_are_different = true
-				end
-				
+		local wavelengths, ids -- used to check list length but get assigned the table only after the entire first file has been iterated
+		local first_wavelengths, first_ids = {}, {} -- holds temporary values to skip the length check for first file
+		
+		-- Iterate over filenames
+		for _, filename in ipairs(potential_filenames) do
+			
+			-- Iterate over lines and check if the files match
+			for line_index, info in ipairs(lines_info[filename]) do
+					
+				-- Check if the lines in different files match
 				if not files_are_different then -- lazy match
 					
-					-- initialize the wavelength and ID 
-					wavelengths = wavelengths or {}
-					ids = ids or {}
-					wavelengths[line_index] = wavelengths[line_index] or info["Wavelength (m)"]
-					ids[line_index] = ids[line_index] or info["Identificator"]
+					-- Check lengths, skip first file but check the following
+					if wavelengths and (tableLength(info["Wavelength (m)"]) ~= tableLength(wavelengths)) then
+						files_are_different = true
+					elseif ids and (tableLength(info["Identificator"]) ~= tableLength(ids)) then
+						files_are_different = true
+					end
 					
-					-- scheck if wavelength and ID match with previously saved ones.
-					files_are_different = files_are_different or (wavelengths[line_index] ~= info["Wavelength (m)"])
-					files_are_different = files_are_different or (ids[line_index] ~= info["Identificator"])
+					if not files_are_different then -- lazy match
+						
+						-- initialize the wavelength and ID 
+						first_wavelengths[line_index] = first_wavelengths[line_index] or info["Wavelength (m)"]
+						first_ids[line_index] = first_ids[line_index] or info["Identificator"]
+						
+						-- check if wavelength and ID match with previously saved ones.
+						files_are_different = files_are_different or (first_wavelengths[line_index] ~= info["Wavelength (m)"])
+						files_are_different = files_are_different or (first_ids[line_index] ~= info["Identificator"])
+					end
 				end
 			end
+			
+			-- Assign the entire table at once
+			wavelengths = wavelengths or first_wavelengths
+			ids = ids or first_ids
 		end
 	end
 	
 	-- Check if defined filename has the longest list of lines
-	local wanted_is_longest = false
 	local wanted_table_size = wanted_filename and lines_info[wanted_filename] and tableLength(lines_info[wanted_filename]) or 0
-	if (wanted_table_size >= table_size) then wanted_is_longest = true end
+	local wanted_is_longest = (wanted_table_size >= table_size)
 	
 	-- Use the same file for all series (duration of the script), unless the other specified file contains same data
 	-- if file is initialized and wanted file is same then use wanted file
@@ -1549,6 +1658,8 @@ end
 -- Read raw data, process it and save corrected spectra into new file in the same format
 function process_raw_data_series(data_filename)
 	db("process_raw_data_series", 2)
+	
+	print("Starting calculating noise stdevs and saving processed spectra in folder: "..corrected_path)
 	
 	-- Get files with data_filename beginning
 	local patterns_or = {}
@@ -2105,6 +2216,8 @@ function process_spectrum(data_filename, spectrum_index, experiment_check)
 	-- Generates and fits functions
 	local minimal_data_value, max_constant_value, max_height_values, angle_errors, polyline_values = fit_functions(data_filename)
 	
+	if stopscript then return end -- stop the script
+	
 	-- Turn weak lines into dummies before write_output()
 	if nullify_weak_lines_data then
 		nullify_lines(polyline_values)
@@ -2207,7 +2320,8 @@ function register_spectrum_boundaries()
 	endpoint = cut_end or max_x -- last pixel as end
 	
 	-- Constructs plot command with correct ranges and shows the entire range in the GUI for easier debugging
-	plot_command = "plot ["..tostring(min_x * 0.95)..":"..tostring(max_x * 1.05).."] [:]"
+	local window_size = max_x - min_x
+	plot_command = "plot ["..tostring(min_x - window_size * 0.05)..":"..tostring(max_x + window_size * 0.05).."] [:]"
 	F:execute(plot_command)
 end
 
@@ -2281,6 +2395,9 @@ function fit_functions(data_filename)
 		return
 	end
 	
+	-- TODO: if any one line references more than 75 % (?) of all lines then just fit the entire spectral range and all lines at once
+	-- TODO: give the user an option to use fit-all mode in _user_constants.lua
+	
 	-- Iterates over all spectral lines
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
 		
@@ -2310,27 +2427,29 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 	-- root_variables[line_index] = {param_name_1 = {"name" = variable_name, "v_type" = variable_type}, param_name_2 = ...}
 	local root_variables = {}
 	
+	-- TODO: what if dummy is referenced by other lines? run save_linked_info() before create_line() and don't turn linked lines into dummies in the latter
+	
 	-- Iterate over all the spectral lines and create them
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
 		create_line(line_index, minimal_data_value, root_variables, max_height_values)
 	end
 	
 	-- Create variables defined in the links
-	local all_expressions = {}
+	local parameter_expressions = {}
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
 		
 		-- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
 		-- Also save parameter link expressions
 		local line_expressions = apply_variable_declarations(line_index)
-		all_expressions = tableMerge(all_expressions, line_expressions)
+		parameter_expressions = tableMerge(parameter_expressions, line_expressions)
 	end
 	
 	-- Get the dependencies of lines to link (if left line references right one then right has to be linked first or the first link is broken)
 	local links_dependencies = {} -- Format: tbl[func_param] = {func_param_link1, func_param_link2, ...}
-	for line_name, expr_table in pairs(all_expressions) do
+	for line_name, expr_table in pairs(parameter_expressions) do
 		
 		-- Get dependencies. If there are no function dependencies then the expression is executed (parameter depends only on variables, not linked to other parameters)
-		local line_dependencies = get_links_dependencies(line_name, expr_table)
+		local line_dependencies = get_links_dependencies(line_name, expr_table, root_variables)
 		
 		-- Merge the new dependencies into links_dependencies
 		links_dependencies = tableMerge(links_dependencies, line_dependencies)
@@ -2349,7 +2468,7 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 		local line_index = get_line_index_by_name(func_name)
 		
 		-- Apply links only for that function and parameter
-		apply_linked_variable(line_index, root_variables, param_name) -- TODO: use it during line creation (guess constructor)?
+		apply_linked_parameter(line_index, root_variables, param_name) -- TODO: use it during line creation (guess constructor)?
 	end
 	
 	-- Delete the variables that aren't used anywhere after linking (just in case if it improves speed)
@@ -2408,7 +2527,7 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	end
 	
 	
-	local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
+	local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
 	local max_position_shift = lines_info[lines_info_filename][line_index]["Max position shift (m)"]
 	local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"]
 	
@@ -2474,6 +2593,7 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	--if height <= noise then -- line doesn't exist 
 	local smaller_noise = 0.75 -- Low but wide line can still be distinguished from noise but I have to only use height here, so make the condition more relaxed.
 	if height <= (global_noise_height * detection_sn_ratio_height * smaller_noise) then -- line doesn't exist, might be wide, so lower than global_noise_height is ok
+		-- TODO: don't turn linked line into dummy here
 		return -- instead create a dummy function
 	end
 	
@@ -2508,8 +2628,8 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 		
 		-- Limit shape for VoigtApparatus (more freedom than other Voigts)
 		if (function_type == "VoigtApparatus") then
-			local apparatus_fn_fwhm = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
-			local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
+			local apparatus_fn = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
+			local gwidth = apparatus_fn / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
 			local max_VoigtApp_shape = get_shape(max_FWHM, gwidth)
 			
 			-- Lock gwidth, so it would result in GaussianFWHM of apparatus function
@@ -2704,7 +2824,7 @@ end
 
 -- Get the type of the variable
 function get_one_variable_type(variable_name)
-	local var_obj = F:get_variable(variable_name)
+	local var_obj = wrapSilent(function() return F:get_variable(variable_name) end)
 	if var_obj:is_simple() then -- simple variable
 		return "simple"
 	elseif is_variable_constant(variable_name) then -- constant variable
@@ -2729,7 +2849,7 @@ function get_root_parent_variables(orig_var_name, root_var_names_tbl)
 	db("get_root_parent_variables", 4)
 	root_var_names_tbl = root_var_names_tbl or {}
 	
-	local var = F:get_variable(orig_var_name) -- variable object
+	local var = wrapSilent(function() return F:get_variable(orig_var_name) end) -- variable object
 	if var:is_simple() or is_variable_constant(orig_var_name) then -- simple variable or constant
 		table.insert(root_var_names_tbl, orig_var_name)
 	
@@ -2803,13 +2923,18 @@ function get_functions_from_expression(expression)
 end
 
 -- Get ordered list of which lines and parameters to link first in order not to break links later
-function get_links_dependencies(function_name, expr_table)
+function get_links_dependencies(function_name, expr_table, root_variables)
 	db("get_links_dependencies", 2)
 	
-	-- Iterate over the expressions, parse them
 	local line_dependencies = {}
+	
+	-- If line is dummy then skip the parsing its links -- TODO: if dummy is revived then need to parse the links
+	local line_index = get_line_index_by_name(function_name)
+	if not root_variables[line_index] then return line_dependencies end
+	
+	-- Iterate over the expressions, parse them
 	for expr_idx, expression in ipairs(expr_table) do
-		local func_param, expression_dependencies = parse_expression_for_dependencies(expression, function_name)
+		local func_param, expression_dependencies = parse_expression_for_dependencies(expression, function_name, root_variables)
 		
 		-- Merge the new dependencies into line_dependencies
 		if tableLength(expression_dependencies) > 0 then
@@ -2861,8 +2986,10 @@ function topological_sort(dependency_graph)
     return sorted
 end
 
--- Parse the given expression (linked variables) and execute it if no immediate flaws are seen
-function parse_expression_for_dependencies(expression, function_name)
+-- Parse the given expression (linked variables) and return declared func.param string and
+-- return func.param strings that the declaration references
+-- Execute expressions which don't reference any other lines
+function parse_expression_for_dependencies(expression, function_name, root_variables)
 	db("parse_expression_for_dependencies", 3)
 	
 	local dependency_table = {}
@@ -2881,12 +3008,19 @@ function parse_expression_for_dependencies(expression, function_name)
 	if tableLength(referenced_func_params) <= 0 then
 		expression = "%"..function_name.."."..expression
 		F:execute(expression)
+		
+		-- Modify root_variables to account for the new parameter variable(s)
+		local line_index = get_line_index_by_name(function_name)
+		local var_names, var_types = get_link_variable_types(line_index, declared_parameter_name)
+		root_variables[line_index][declared_parameter_name].names = var_names
+		root_variables[line_index][declared_parameter_name].v_types = var_types
 	end
 	
 	return func_param, referenced_func_params
 end
 
 -- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
+-- Create all defined and referenced variables
 -- Save return parameter linking expressions
 function apply_variable_declarations(line_index)
 	db("apply_variable_declarations", 2)
@@ -2909,26 +3043,17 @@ function apply_variable_declarations(line_index)
 	return expressions
 end
 
--- 
+-- Create all defined and referenced variables in the expression
+-- Save parameter linking expressions into expressions table inline
 function parse_var_declaration_expression(expression, function_name, expressions)
 	db("parse_var_declaration_expression", 3)
 	
-	-- remove whitespace at the beginning of the string
-	local first_char = string.sub(expression, 1, 1)
-	while (string.match(first_char, "%s")) do -- while whitespace do
-		expression = string.sub(expression, 2) -- remove first character
-		first_char = string.sub(expression, 1, 1)
-	end
-	first_char = string.sub(expression, 1, 1)
-	
-	-- variable declaration
-	local is_var_declaration = (first_char == "$")
+	-- Check if it's a variable declaration expression
+	local declared_var_name = string.match(expression, "^%s-%$([_%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
 	
 	-- Check if variable is already created, return if yes
-	local declared_var_name = string.match(expression, "^%$([_%w]+)%s-=") -- string start, $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
-	
-	if is_var_declaration then
-		local var = F:get_variable(declared_var_name) -- variable object
+	if declared_var_name then
+		local var = wrapSilent(function() return F:get_variable(declared_var_name) end) -- variable object
 		if var then
 			printe("parse_var_declaration_expression() | Variable declaration but variable already exists. Linked variable command under function: "..function_name..", expression: "..expression)
 			return
@@ -2943,33 +3068,38 @@ function parse_var_declaration_expression(expression, function_name, expressions
 		if (var_name ~= declared_var_name) then -- don't create the declared variable yet
 			
 			-- check if the variable exists, create it if not
-			local var = F:get_variable(var_name) -- variable object
+			local var = wrapSilent(function() return F:get_variable(var_name) end) -- variable object
 			if not var then
 				F:execute("$"..var_name.." = ~1") -- default value 1, simple variable (~)
 			end
 		end
 	end
 	
-	-- Save other expressions
-	if not is_var_declaration then
+	-- Execute the variable declaration or save the parameter declaration
+	if declared_var_name then -- is variable declaration
+		
+		-- Execute the expression and catch errors
+		local status, err = pcall(function()
+			F:execute(expression)
+		end)
+		
+		if not status then 
+			printe("parse_var_declaration_expression() | Failed to execute variable declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
+		end
+	
+	-- Save other expressions which are function parameter linking for later use
+	else
 		expressions[function_name] = expressions[function_name] or {}
 		table.insert(expressions[function_name], expression)
 		return
 	end
-	
-	-- Execute the expression and catch errors
-	local status, err = pcall(function()
-		F:execute(expression)
-	end)
-	
-	if not status then 
-		printe("parse_var_declaration_expression() | Failed to execute variable declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
-	end
 end
 
 -- Use Linked variables equations defined in Lines_info*.csv
-function apply_linked_variable(line_index, root_variables, check_param_name)
-	db("apply_linked_variable", 2)
+function apply_linked_parameter(line_index, root_variables, check_param_name)
+	db("apply_linked_parameter", 2)
+	
+	if not root_variables[line_index] then return end -- line is dummy -- TODO: revive dummy?
 	
 	local function_name = get_fn_name(line_index)
 	
@@ -2982,16 +3112,23 @@ function apply_linked_variable(line_index, root_variables, check_param_name)
 	
 	-- Iterate over the expressions, parse them and execute them
 	for idx, expression in ipairs(expressions) do
-		parse_and_execute_expression(expression, line_index, function_name, root_variables, check_param_name)
+		parse_and_execute_parameter_expression(expression, line_index, function_name, root_variables, check_param_name)
 	end
 end
 
 -- Parse the given expression (linked variables) and execute it if no immediate flaws are seen
--- Returns if check_param_name is defined ant the expression isn't about defining that parameter
-function parse_and_execute_expression(expression, line_index, function_name, root_variables, check_param_name)
-	db("parse_and_execute_expression", 3)
+-- Returns if check_param_name is defined and the expression isn't about defining that parameter
+-- All referenced and defined variables are already created in apply_variable_declarations()
+function parse_and_execute_parameter_expression(expression, line_index, function_name, root_variables, check_param_name)
+	db("parse_and_execute_parameter_expression", 3)
 	
-	if not root_variables[line_index] then return end -- line is dummy -- TODO: revive dummy?
+	-- Check if it's a variable declaration expression
+	local declared_var_name = string.match(expression, "^%s-%$([_%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+	if declared_var_name then return end
+	
+	-- Get the declared parameter
+	local declared_parameter_name = string.match(expression, "^([%w]+).-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any characters (lazy 0 or more), =
+	if declared_parameter_name ~= check_param_name then return end -- wrong parameter
 	
 	-- Get a list of referenced functions and check if they exist, if not then return because expression is invalid
 	-- The current function is newly created, others need to be checked
@@ -3001,64 +3138,22 @@ function parse_and_execute_expression(expression, line_index, function_name, roo
 		-- Check if line is already created
 		local fn = F:get_function(fn_name) -- line function
 		if not fn then
-			printe("parse_and_execute_expression() | Function referenced but not yet created. Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
+			printe("parse_and_execute_parameter_expression() | Function referenced but not yet created. Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
 			return
 		end
-	end
-	
-	-- remove whitespace at the beginning of the string
-	local first_char = string.sub(expression, 1, 1)
-	while (string.match(first_char, "%s")) do -- while whitespace do
-		expression = string.sub(expression, 2) -- remove first character
-		first_char = string.sub(expression, 1, 1)
-	end
-	first_char = string.sub(expression, 1, 1)
-	
-	-- variable declaration, return if variable already exists
-	local declared_var_name, declared_parameter_name
-	local is_var_declaration = (first_char == "$")
-	if is_var_declaration then
 		
-		if check_param_name then return end -- variable declaration but parameter mode
-		
-		-- Check if variable is already created
-		declared_var_name = string.match(expression, "^$([_%w]+)%s-=") -- string start, $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
-		local var = F:get_variable(declared_var_name) -- variable object
-		if var then
-			printe("parse_and_execute_expression() | Variable declaration but variable already exists. Linked variable command under function: "..function_name..", referenced variable name: "..var_name..", expression: "..expression)
+		-- Check if the referenced function is a dummy, return if yes -- TODO: revive dummy or prevent this situation in create_line()
+		local line_index = get_line_index_by_name(fn_name)
+		if not root_variables[line_index] then
+			printe("parse_and_execute_parameter_expression() | Function referenced a dummy. Skipping the declaration and it might break other links. Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
 			return
-		end
-	else
-		declared_parameter_name = string.match(expression, "^([%w]+).-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any characters (lazy 0 or more), =
-	end
-	
-	if declared_parameter_name ~= check_param_name then return end -- wrong parameter
-	
-	-- Get a list of referenced variables
-	local variable_names_table = get_variables_from_expression(expression)
-	
-	-- Iterate over the table and create variables that don't exist
-	for idx, var_name in ipairs(variable_names_table) do
-		if (var_name ~= declared_var_name) then -- don't create the declared variable yet
-			
-			-- check if the variable exists, create it if not
-			local var = F:get_variable(var_name) -- variable object
-			if not var then
-				F:execute("$"..var_name.." = ~1") -- default value 1, simple variable (~)
-			end
 		end
 	end
 	
 	-- Execute the expression and catch errors
 	local status, err = pcall(function() 
 		
-		-- execute the variable declaration
-		if is_var_declaration then
-			F:execute(expression)
-			return
-		end
-		
-		-- it's parameter declaration, add function name in the beginning and execute
+		-- add function name in the beginning and execute
 		expression = "%"..function_name.."."..expression
 		F:execute(expression)
 		
@@ -3069,7 +3164,7 @@ function parse_and_execute_expression(expression, line_index, function_name, roo
 	end)
 	
 	if not status then -- had error
-		printe("parse_and_execute_expression() | Executing the expression raised an error. Linked variable command under function: "..function_name..", expression: "..expression.." , error: "..tostring(err))
+		printe("parse_and_execute_parameter_expression() | Executing the expression raised an error. Linked variable command under function: "..function_name..", expression: "..expression.." , error: "..tostring(err))
 		return
 	end
 end
@@ -3089,7 +3184,7 @@ function get_link_variable_types(line_index, param_name)
 	-- Check if the "link" actually is just a simple variable (even if through multiple direct references without math)
 	if is_linked_simple_variable(variable_name) then
 		
-		if tableLenght(root_var_names_tbl) > 1 then -- some error in is_linked_simple_variable()
+		if tableLength(root_var_names_tbl) > 1 then -- some error in is_linked_simple_variable()
 			printe("get_link_variable_types() | Is linked simple variable but there are multiple roots? line_index: "..tostring(line_index)..", param_name: "..tostring(param_name)..", variable_name: "..tostring(variable_name))
 		end
 		
@@ -3102,7 +3197,7 @@ function get_link_variable_types(line_index, param_name)
 	for idx, var_name in ipairs(root_var_names_tbl) do
 		local var_type = get_one_variable_type(var_name)
 		
-		if (var_type == "compound") then printe("parse_and_execute_expression() | Root variable type is compound. Linked variable name: "..var_name)
+		if (var_type == "compound") then printe("get_link_variable_types() | Root variable type is compound. Linked variable name: "..var_name)
 		elseif (var_type == "simple") then var_type = "linked" end
 		
 		table.insert(var_types, var_type)
@@ -3116,7 +3211,7 @@ function is_linked_simple_variable(variable_name)
 	db("is_linked_simple_variable", 6)
 	
 	-- Check if it's a simple variable
-	local var_obj = F:get_variable(variable_name)
+	local var_obj = wrapSilent(function() return F:get_variable(variable_name) end)
 	if var_obj:is_simple() then return true end
 	
 	-- Check the expression if there's only "$a = $b" or something more (math)
@@ -3240,7 +3335,7 @@ end
 
 -- save generic info like line type (dummy) or root variables
 function save_line_info(line_index, root_variables)
-	db("save_line_info", 4)
+	db("save_line_info", 2)
 	
 	local function_name = get_fn_name(line_index)
 	local parameter_names = get_parameter_names(function_name)
@@ -3250,7 +3345,7 @@ function save_line_info(line_index, root_variables)
 	if not root_variables[line_index] then
 		line_type = "dummy"
 	else
-		line_type = lines_info[lines_info_filename][line_index]["function to fit"]
+		line_type = lines_info[lines_info_filename][line_index]["Function to fit"]
 	end
 	
 	-- Save info
@@ -3408,8 +3503,7 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	local function_name = lines_data[main_line_index].name
 	
 	-- Get range in which other (normal) lines influence the current line
-	local second_order_multiplier = 1.5
-	local beginning, ending = get_influence_diameter(main_line_index, second_order_multiplier)
+	local beginning, ending = get_influence_range(main_line_index)
 	
 	-- Activate dataset points in the influence diameter (plus extra) of the main line
 	select_active_points(beginning, ending)
@@ -3533,11 +3627,15 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 			printe("fit_one_line() | Failed to fit line name: "..tostring(function_name)..", line type: "..tostring(lines_data[main_line_index].type).." because active points were all 0. Turning line into dummy. Error message: "..tostring(err), 1)
 			--turn_into_dummy(main_line_index) -- sometimes well fitted strong line fails when window reaches it, so not a dummy
 		
-		-- Some other error
+		-- Some other error. Print it only once per series to avoid clogging the log for a systematic line error originating from Lines_info*.csv
 		else
-			printe("fit_one_line() | Failed to fit line name: "..tostring(function_name)..", line type: "..tostring(lines_data[main_line_index].type)..". Error message: "..tostring(err))
+			fit_error = "fit_one_line() | Failed to fit line name: "..tostring(function_name)..", line type: "..tostring(lines_data[main_line_index].type)..". Error message: \""..tostring(err).."\""
+			if not series_fit_errors[fit_error] then printe(fit_error..". Suppressing this error for other experiments in the series.", -1) end
+			series_fit_errors[fit_error] = true
 		end
 	end
+	
+	-- TODO: check if sometimes "Singular matrix cannot be reversed" and "Trying to reverse singular matrix" errors are caused because of variable linking
 	
 	
 	-- Stop for debugging
@@ -3557,8 +3655,10 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	else -- ordinary fit
 		
 		-- wrap because sometimes Fityk has a zeroed covariance matrix
-		local angle_error = wrapVerbose(function() return F:calculate_expr("$constant_variable_local.error") end,
-		"ERROR: fit_one_line() | Failed to get $constant_variable_local variable error. main_line_index: "..tostring(main_line_index)
+		local angle_error = wrapSilent(function() return F:calculate_expr("$constant_variable_local.error") end,
+			function(err) printe("fit_one_line() | Failed to get $constant_variable_local.error. main_line_index: "..tostring(main_line_index)..
+			", error message: "..tostring(err), 0) 
+			end
 		)
 		
 		angle_errors.bg_local.error[main_line_index] = angle_error and math.abs((max_constant_value_temp - minimal_data_value_temp) / 2 * math.cos(constant_value_temp) * angle_error) or nil
@@ -3606,8 +3706,7 @@ function activate_secondary_window(main_window_beginning, main_window_ending, fu
 	local secondary_window_lines = {}
 	
 	-- Get range in which lines influence the current line
-	local second_order_multiplier = 0.5
-	local beginning2, ending2 = get_influence_diameter(line_idx, second_order_multiplier)
+	local beginning2, ending2 = get_influence_range(line_idx)
 	
 	-- Clip the secondary range, so that it doesn't interfere with the main window
 	if (beginning2 >= main_window_beginning) and (ending2 <= main_window_ending) then -- window is inside the main window
@@ -3618,7 +3717,7 @@ function activate_secondary_window(main_window_beginning, main_window_ending, fu
 		beginning2 = clip(beginning2, main_window_ending + infinitesimal)
 	
 	elseif (ending2 >= main_window_beginning) and (ending2 <= main_window_ending) then -- window interacts with main window, stays on the left
-		ending2 = clip(ending2, nil, begining - infinitesimal)
+		ending2 = clip(ending2, nil, main_window_beginning - infinitesimal)
 	
 	--elseif beginning2 > main_window_ending then -- normal, window is right of main window
 	--elseif ending2 < main_window_beginning then -- normal, window is left of main window
@@ -3640,13 +3739,32 @@ end
 
 
 -- Get the left and right wavelength of the influence range of the current line
+function get_influence_range(line_index)
+	db("get_influence_range", 4)
+	
+	local beginning = lines_info[lines_info_filename][line_index]["Influencing_lines"]["left"]
+	local ending = lines_info[lines_info_filename][line_index]["Influencing_lines"]["right"]
+	
+	if forbid_lines_outside_range then -- TODO: check new code if always must forbid
+		beginning = clip(beginning, cut_start, cut_end)
+		ending = clip(ending, cut_start, cut_end)
+	end
+	
+	beginning = clip(beginning, startpoint, endpoint)
+	ending = clip(ending, startpoint, endpoint)
+	
+	return beginning, ending
+end
+
+--[[
+-- Get the left and right wavelength of the influence range of the current line
 function get_influence_diameter(line_index, second_order_multiplier)
 	db("get_influence_diameter", 4)
 	
 	local info = lines_info[lines_info_filename][line_index]
 	local line_position = info["Wavelength (m)"]
 	
-	local line_influence_diameter = info["Max influence radius"]
+	local line_influence_diameter = info["Max influence radius (m)"]
 	
 	--second_order_multiplier = 1.5 -- multiply influence diameter because influencing line might be influenced by another further away
 	local beginning = line_position - line_influence_diameter * second_order_multiplier
@@ -3661,6 +3779,7 @@ function get_influence_diameter(line_index, second_order_multiplier)
 	
 	return beginning, ending
 end
+--]]
 
 -- Return a table of lines and parameters that need to be activated for the fitting of the main line. This means lines in its influence range and
 -- linked lines with some others closer to the linked line. Don't return lines which have all of their parameters fitted before due to links.
@@ -3700,8 +3819,7 @@ function gather_lines_main(line_index)
 	local main_line_position = info["Wavelength (m)"]
 	
 	-- Get range in which lines influence the main line
-	local second_order_multiplier = 1.5
-	local beginning, ending = get_influence_diameter(line_index, second_order_multiplier)
+	local beginning, ending = get_influence_range(line_index)
 	
 	-- Gather ordinary lines in main line influence range
 	local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], main_line_position, ending) -- use only the current line and lines to the right because others are already fitted and locked
@@ -3763,8 +3881,7 @@ function gather_secondary_lines_iterate(linked_lines_list)
 		if not is_all_params_fitted(line_idx) then
 			
 			-- Get range in which lines influence the current line
-			local second_order_multiplier = 0.5
-			local beginning, ending = get_influence_diameter(line_idx, second_order_multiplier)
+			local beginning, ending = get_influence_range(line_idx)
 			
 			-- Gather lines in secondary line influence range
 			local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], beginning, ending) -- Format: tbl[line_index] = true
@@ -3952,7 +4069,7 @@ function lock_variable_save_errors(main_line_index, function_name, line_index, p
 		printe("lock_lines() | Locking compound variable: " .. root_var_name)
 	end
 	
-	local var_obj = F:get_variable(root_var_name)
+	local var_obj = wrapSilent(function() return F:get_variable(root_var_name) end)
 	
 	-- Linked variable loses its error after first locking but correctly fitted line is always the leftmost linked line which is always the main line
 	
@@ -3964,8 +4081,10 @@ function lock_variable_save_errors(main_line_index, function_name, line_index, p
 	elseif var_obj:is_simple() then -- can extract error (simple or linked simple)
 		
 		-- wrap because sometimes Fityk has a zeroed covariance matrix
-		error_value = wrapVerbose(function() return F:calculate_expr("$"..root_var_name..".error") end,
-		"ERROR: lock_variable_save_errors() | Failed to get $"..tostring(root_var_name).." variable error. main_line_index: "..tostring(main_line_index)
+		error_value = wrapSilent(function() return F:calculate_expr("$"..root_var_name..".error") end,
+			function(err) printe("lock_variable_save_errors() | Failed to get $"..tostring(root_var_name).." variable error. main_line_index: "..tostring(main_line_index)..
+			", error message: "..tostring(err), 0) 
+			end
 		)
 	
 	else -- e.g. compound or linked but not simple
@@ -4125,7 +4244,7 @@ function create_dummy_function(line_index)
 	db(line_position)
 	
 	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
-	local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
+	local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
 	
 	-- Get function name
 	local function_name = get_fn_name(line_index)
@@ -4433,7 +4552,7 @@ function get_line_errors(line_index, errors, max_height_values, angle_errors)
 		
 		elseif (parameter_type == "normal") then
 			-- wrap saves if error is nil but script tries to calculate error through angle variable, fn still needs to execute to check for vars locked in input file
-			error_value = wrapSilent(calculate_normal_error_derivative, line_index, parameter_name, max_height_values) -- calculated complex error (default)
+			error_value = wrapSilent(calculate_normal_error_derivative, nil, line_index, parameter_name, max_height_values) -- calculated complex error (default)
 		
 		else
 			printe("get_line_errors() | Parameter type is unconventional. parameter_type: "..tostring(parameter_type).."line_index: "..tostring(line_index))
@@ -4463,7 +4582,7 @@ function calculate_normal_error_derivative(line_index, parameter_name, max_heigh
 	local angle_var_error = lines_data[line_index]["parameters"][parameter_name]["root_vars"]["errors"][angle_variable_index]
 	
 	if (not angle_var_name) or (not angle_var_error) then
-		printe("calculate_normal_error_derivative() | Angle variable is nil from parameter locking. angle_var_name: "..tostring(angle_var_name)..", angle_var_error: "..tostring(angle_var_error)..", line_index: "..tostring(line_index)..", parameter_name: "..tostring(parameter_name))
+		printe("calculate_normal_error_derivative() | Angle variable is nil from parameter locking. angle_var_name: "..tostring(angle_var_name)..", angle_var_error: "..tostring(angle_var_error)..", line_index: "..tostring(line_index)..", parameter_name: "..tostring(parameter_name), 0)
 		--return
 	end
 	
@@ -4561,8 +4680,8 @@ function calculate_normal_error_derivative(line_index, parameter_name, max_heigh
 		
 		-- VoigtApparatus
 		if (function_type == "VoigtApparatus") then
-			local apparatus_fn_fwhm = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
-			local gwidth = apparatus_fn_fwhm / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
+			local apparatus_fn = apparatus_function_fwhm(line_position) -- apparatus function at given wavelength
+			local gwidth = apparatus_fn / 2 / math.sqrt(math.log(2)) -- from Fityk manual at Voigt function
 			local max_VoigtApp_shape = get_shape(max_FWHM, gwidth)
 			
 			error_value = math.abs(max_VoigtApp_shape / 2 * math.cos(F:calculate_expr("$"..angle_var_name)) * angle_var_error)
@@ -4587,7 +4706,7 @@ function write_output(data_filename, spectrum_index, errors)
 	if not output_initialized then
 		output_initialized = true
 		
-		-- Copy user_constants.lua to the output (increment index if already exists)
+		-- Copy _user_constants.lua to the output (increment index if already exists)
 		save_user_constants()
 		
 		-- Write column headers
@@ -4646,7 +4765,7 @@ function write_output(data_filename, spectrum_index, errors)
 		
 		-- Get variables according to the fitted line type
 		local hwhm,gwidth,shape,GFWHM,LFWHM
-		local function_type = lines_info[lines_info_filename][line_index]["function to fit"]
+		local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
 		if function_type == "Voigt" then -- Voigt
 			gwidth = math.abs(fn:get_param_value("gwidth"))
 			shape = math.abs(fn:get_param_value("shape"))
@@ -4746,7 +4865,7 @@ function init_output()
 	
 	-- Iterates over all spectral lines
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local fn_type = lines_info[lines_info_filename][line_index]["function to fit"] -- line type
+		local fn_type = lines_info[lines_info_filename][line_index]["Function to fit"] -- line type
 		local fn_name = lines_data[line_index].name -- line name
 		local output_str = separator..tostring(line_index).." "..fn_name.." "..fn_type
 		io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
@@ -4794,13 +4913,13 @@ function init_output()
 end
 
 
--- Copy-paste user_constants.lua to output folder (increment index if already exists)
+-- Copy-paste _user_constants.lua to output folder (increment index if already exists)
 function save_user_constants()
 	
 	-- Get the filepath with the first index that isn't used
 	local index = get_output_user_constants_idx(1)
 	local output_filepath = compile_output_user_constants_filepath(index)
-	local input_filepath = info_folder.."user_constants.lua"
+	local input_filepath = info_folder.."_user_constants.lua"
 	
 	local file_out = io.open(output_filepath, "w")
 	io.output(file_out)
@@ -4814,7 +4933,7 @@ function save_user_constants()
 	io.close(file_out)
 end
 
--- Recursive function that finds the first index that isn't used yet for user_constants.lua in the output
+-- Recursive function that finds the first index that isn't used yet for _user_constants.lua in the output
 function get_output_user_constants_idx(index)
 	local filepath = compile_output_user_constants_filepath(index)
 	
@@ -4826,10 +4945,10 @@ function get_output_user_constants_idx(index)
 	end
 end
 
--- Get the filepath with the given index to the user_constants.lua in the output
+-- Get the filepath with the given index to the _user_constants.lua in the output
 function compile_output_user_constants_filepath(index)
-	local filepath = output_path.. "user_constants"
-	if index >= 2 then filepath = filepath.."_"..tostring(index) end -- Add index if "user_constants.lua" exists
+	local filepath = output_path.. "_user_constants" -- _ in front to easily find the file in the folder
+	if index >= 2 then filepath = filepath.."_"..tostring(index) end -- Add index if "_user_constants.lua" exists
 	filepath = filepath..".lua" 
 	return filepath
 end
@@ -5032,23 +5151,26 @@ function db(something, priority)
 	end
 end
 
--- Wraps provided fn in pcall, catches the error and prints it
-function wrap(fn, ...)
+-- Wraps provided fn in pcall, catches the error and prints it. If second variable is a function then executes it when not status
+function wrap(fn, fn_error, ...)
 	local results = table.pack(pcall(fn, ...))
 	local status = results[1]
 	if status then -- return all values except the first one (which is the success flag)
         return table.unpack(results, 2, results.n)
 	else
+		if type(fn_error) == "function" then fn_error(results[2], ...) end
 		print(tostring(results[2])) -- print the error message
     end
 end
 
 -- Wraps provided fn in pcall, doesn't print the error
-function wrapSilent(fn, ...)
+function wrapSilent(fn, fn_error, ...)
 	local results = table.pack(pcall(fn, ...))
 	if results[1] then
         return table.unpack(results, 2, results.n) -- return all values except the first one (which is the success flag)
-    end
+    else
+		if type(fn_error) == "function" then fn_error(results[2], ...) end
+	end
 end
 
 -- Wraps provided fn in pcall, catches the error and prints it with user defined string

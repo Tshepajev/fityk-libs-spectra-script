@@ -31,13 +31,13 @@ sessions_path = output_path .. "Sessions/" -- sessions after fitting are saved h
 -- 80 % of errors are because of bad input files, 15 % from bad variables in these settings
 
 
-output_data_name = "Fityk_output"
+output_data_name = "_Fityk_output"
 output_data_end = ".csv"
 
 
 -- Filename for stopscript. If this file isn't empty then code stops loop after
 -- processing current experiment and outputting data.
-stopscript_name = "Stopscript.txt"
+stopscript_name = "_Stopscript.txt"
 
 
 -- What type of data files do you want to input? If eg .asc is already in info file filenames then write "".
@@ -191,9 +191,6 @@ gain_functions = {
 forbid_lines_outside_range = true
 
 
--- The apparatus function of the system when using VoigtApparatus curve. This is the FWHM of Gaussian (GaussianFWHM of apparatus fn)
-apparatus_fn_fwhm = 0.044e-9
-
 -- The function format is useful if e.g. apparatus function changes throughout the spectrum. Currently used only by min_FWHM_function().
 -- If it's constant then just return a constant value or variable instead of the equation.
 apparatus_function_fwhm = function(wavelength)
@@ -201,11 +198,6 @@ apparatus_function_fwhm = function(wavelength)
 	return 1.142857E-04 * wavelength + 1.428571E-12
 end
 
--- What is the minimal line gwidth? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
---minimal_gwidth = 5e-12 -- approx 5 px pparatus fn, this is at shape = 10
- 
--- What is the minimal line width at half maximum? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
---min_FWHM = apparatus_fn_fwhm -- approx 3 px apparatus fn, this is at shape = 10 
 
 -- What is the minimal line width at half maximum? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
 -- The function format is useful if min_FWHM (e.g. apparatus function) changes throughout the spectrum.
@@ -262,6 +254,17 @@ detection_sn_ratio_area = 4
 -----------------------
 -- Unused
 -----------------------
+
+-- What is the minimal line gwidth? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
+--minimal_gwidth = 5e-12 -- approx 5 px pparatus fn, this is at shape = 10
+ 
+-- What is the minimal line width at half maximum? This will be Voigt or Gaussian/Lorentzian functions' lower bound.
+--min_FWHM = apparatus_fn_fwhm -- approx 3 px apparatus fn, this is at shape = 10 
+
+
+-- The apparatus function of the system when using VoigtApparatus curve. This is the FWHM of Gaussian (GaussianFWHM of apparatus fn)
+--apparatus_fn_fwhm = 0.044e-9
+
 
 -- What percentile of active data minus the minimal active data is considered as the lowest line height. 
 -- If line height is lower than centile(x,y) - min(y) then it's considered non-existent
