@@ -4,35 +4,90 @@ Initial script, undocumented.
 ...
 
 v1.9
-Script reads info from input files and inputs all data files defined in it. 
-The data is corrected with spectal sensitivity and fitted with lines defined in the code. 
-The lines have bounds between which their parameters are fitted.
-The script outputs images of the fit and all parameters of all lines. 
-The uncertainties of line parameters aren't to be trusted because of the complexity of the LIBS spectra.
+* Script reads info from input files and inputs all data files defined in it. 
+* The data is corrected with spectal sensitivity and fitted with lines defined in the code. 
+* The lines have bounds between which their parameters are fitted.
+* The script outputs images of the fit and all parameters of all lines. 
+* The uncertainties of line parameters aren't to be trusted because of the complexity of the LIBS spectra.
 
 ...
 
-v2
+v2.5
 Unpublished.
-Introduced modular input info and wrote more complex code.
-Added noise estimate for weak line suppression.
-Introduced moving average smoothing over pixels and datasets of a series.
-Introduced custom line and dataset identifiers (names).
-Introduced additional FWHM to FWHA (full width at half area) calculation.
+* Introduced modular input info and wrote more complex code.
+* The script reads in input info files with custom LUA code for more versatility.
+* Added noise estimate for weak line suppression.
+* Introduced moving average smoothing over pixels and datasets of a series.
+* Introduced custom line and dataset identifiers (names).
+* Introduced additional FWHM to FWHA (full width at half area) calculation.
 
 ...
 
-v3.10
-Rewrote script logic to be more foolproof and modular. 
-The user-defined constants are separated from the main script.
-The script processes the spectra series in chunks to limit RAM usage.
-The lines are fit in a moving window of active points to save processing time. 
-The lines outside the window are locked.
-The script reads in input info files with custom LUA code for more versatility.
-Wrote code that accepts spectra series in one file or multiple files (Andor Solis vs Sophi nXt).
-Saves sessions after fitting.
-Introduced local constants to account for changing continuum.
-Introduced custom line functions (VoigtApparatus, VoigtFWHM and Rectangle).
-Added more quality of life improvements (e.g. automatic output folder creation).
+v3.12
+* Rewrote script logic to be more foolproof and modular. 
+* Rewrote input reading logic.
+* The user-defined constants are separated from the main script for reproducibility of the analysis.
+* The script processes the spectra series in chunks to limit RAM usage (in case of large series).
+* The lines are fit in a moving window of active points to save processing time. The lines outside the window are locked.
+* Wrote code that accepts spectra series in one file or multiple files (Andor Solis vs Sophi nXt).
+* Saves sessions after fitting.
+* Introduced local constants to account for changing continuum and visualized these at the end.
+* Introduced custom line functions (VoigtApparatus, VoigtFWHM and Rectangle).
+* An option to only check a range of experiments in the batch-processing mode.
+* Implemented pre-amp different gain functions.
+* Added a possibility for varying apparatus function and minFWHM (variables to functions).
+* Integrated nullifying noisy lines (turn into dummy).
+* Added more quality of life improvements (e.g. automatic output folder creation, or missing column creation in Input_info files).
 
+v3.13
+Not tested thoroughly.
+* Modified file naming convention (Spectra_info*.csv), so the script is able to handle more complex filenames (when the index is in the middle of the filename).
+* user_constants.lua is automatically copied to the output
+* Fixed a crash when user created a line too far from datapoints
+* Modified Lines_info*.csv headers. Removed Ionization field and renamed "Chemical element" field to "Identificator". Also renamed "Function to fit".
 
+...
+
+v4.0
+* Linking variables (and function parameters). It's now possible to make one function (spectral line) dependent on another line's parameter through an equation.
+
+v4.1
+* Improved line linking. Now all linked lines are fitted simultaneously even if they don't fall under the influence diameter of the first line. Multiple datapoint ranges are active simultaneously during fitting of linked lines.
+* Fixed link dependencies in case line1 links line2 but line2 gets new variable before linking line1.
+* Rewrote variable use logic.
+* Rewrote uncertainty/error calculation part.
+* Rewrote locking/unlocking part and now I'm registering each parameter and variable that has been fitted.
+* Improved lines_info_filename checking algorithm.
+* Output file is initialized only during output phase.
+* Added a debug stop just before line fitting.
+
+v4.2
+* Each active window (due to linked lines) gets its own local constant as a Rectangle function. Before it was only a global constant + another global constant as the temporary local constant.
+* Only one Lines_info*.csv file is used for all series for consistent output format.
+* Output always contains local constant value, even for dummies.
+* Polyline (visualizes local constants for output later) ranges are clear steps now, if there wasn't an active range then the polyline is 0 there.
+* Fixed some bugs and wrapped potential crashes (inconsistencies in locking variables, dummy creation, local line added twice if two series, printTable format, Fityk throwing error during fit etc.).
+* Checked for more situations when line must be turned into dummy.
+* Improved debugging a bit.
+* Added positive rectangle function.
+* Fixed/improved reset after every loop.
+* Center view to data even before outputting (for better debugging).
+
+v4.3
+* Renamed user_constants.lua to _user_constants.lua to find it easily in folder with many files.
+* Renamed two Lines_info*.csv headers.
+* Changed the logic of "Max influence radius (m)" field. Now you only need to consider the width of the current line, unless it's very strong (and would influence weak lines far away).
+* Changed "To fit (1/0)" field into optional with no value defaulting to 1.
+* Changed the columns in Pixel_info*.csv into optional, except for measured unit column.
+* Fixed checking for longest Lines_info*.csv file.
+* Wrapped all F:get_variable() calls because it crashes when the variable doesn't exist, unlike F:get_function().
+* Fixed bug that declaring linked parameter with only variable reference but without any other parameter references didn't update root variables.
+* Made error printing during fitting less verbose.
+* Fixed situation when there are links to/from dummy.
+
+v4.3.1
+* This update only improves performance.
+* Improved linked line secondary window local constant algorithm: removed overlap from local constants and made their initial value before fitting correct.
+* The windows of already fitted lines (on the left of main line) aren't activated again.
+* The windows of linked lines but with the linked parameter already fitted won't be activated again.
+* Fixed bug when lines that used same locked variables (constants) were considered linked.
