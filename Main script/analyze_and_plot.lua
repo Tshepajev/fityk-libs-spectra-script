@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.3
+-- Script version: 4.3.1
 -- Author: Jasper Ristkok
 
 --[[
@@ -173,13 +173,13 @@ lines_data = {}
 
 -- This table keeps track of which lines and their parameters are fitted and shouldn't be fitted again.
 -- Format: tbl[line_name][param] = true
-fitted_lines_params = {}
+finalized_lines_params = {}
 
 -- Contains a list of variable names (as key) that have been fitted and are linked.
 -- If the variable name is in the list then it won't be unlocked with another line and
 -- won't be fitted again.
 -- Format: tbl[variable_name] = true
-fitted_variables = {}
+finalized_variables = {}
 
 -- Hold a table of error strings (as key) to print if a line fitting failed for a specific line only once
 -- during the experiment series. If the fit fails systematically then the errors would clog the log.
@@ -811,11 +811,17 @@ function get_influence_range_bounds(filename, main_line_index)
 			local simple_range = main_influence + second_influence -- alternative situation if second line had 0 influence range
 			local is_influencing = math.abs(second_wl - main_wl) <= simple_range -- lines are close enough for their ranges to touch
 			
-			-- Save the active window wavelength bounds for the main line
+			-- Save the active window wavelength bounds for the main line.
+			-- The bound is related to the farthest second line which's influence range still touches the influence range of the current line.
+			-- The bound is either main line influence range or second line's wavelength plus half of its max fwhm 
+			-- (so second line still gets decently fitted)
 			if is_influencing then
-				-- gets widest range out of all influencing lines
-				left_bound = math.min(left_bound, second_wl - second_influence)
-				right_bound = math.max(right_bound, second_wl + second_influence)
+				local second_fwhm = math.min(file_table[other_line_index]["Max line fwhm (m)"], second_radius / 4) -- min in case it defaulted to infinity
+				
+				-- gets widest range out of all influencing lines, so that the secondary line is still decently fitted
+				-- the range doesn't include the entire influence range of second line, but still a bit more than the center of the secondary line
+				left_bound = math.min(left_bound, second_wl - second_fwhm)
+				right_bound = math.max(right_bound, second_wl + second_fwhm)
 			end
 		end
 	end
@@ -1493,8 +1499,8 @@ function reset_spectrum()
 	-- Reset global line variables
 	linked_lines = {}
 	lines_data = {}
-	fitted_lines_params = {}
-	fitted_variables = {}
+	finalized_lines_params = {}
+	finalized_variables = {}
 end
 
 -- Return the name of the local constant which is associated with the main line window
@@ -2843,6 +2849,29 @@ function is_variable_constant(var_name)
 	return is_number
 end
 
+-- Get the referenced variables of a variable. If the referenced variables are compound variables then recursively find the root simple variable.
+-- This function works only before locking the variables for the first time. After that var:is_simple() and is_variable_constant() don't necessarily give the result I want.
+function get_root_parent_variables_simple(orig_var_name, root_var_names_tbl)
+	db("get_root_parent_variables_simple", 4)
+	root_var_names_tbl = root_var_names_tbl or {}
+	
+	local var = wrapSilent(function() return F:get_variable(orig_var_name) end) -- variable object
+	if var and var:is_simple() then -- simple variable
+		if not is_in_table(root_var_names_tbl, orig_var_name) then table.insert(root_var_names_tbl, orig_var_name) end -- prevent duplicates
+	
+	elseif not is_variable_constant(orig_var_name) then -- compound variable
+		
+		-- get the variables this compound variable references
+		local var_names = get_parent_variables(orig_var_name)
+		
+		-- Iterate over the variable names recursively
+		for idx, name in ipairs(var_names) do
+			root_var_names_tbl = get_root_parent_variables_simple(name, root_var_names_tbl)
+		end
+	end
+	
+	return root_var_names_tbl
+end
 
 -- Get the referenced variables of a variable. If the referenced variables are compound variables then recursively find the root simple/constant variable.
 function get_root_parent_variables(orig_var_name, root_var_names_tbl)
@@ -2851,7 +2880,7 @@ function get_root_parent_variables(orig_var_name, root_var_names_tbl)
 	
 	local var = wrapSilent(function() return F:get_variable(orig_var_name) end) -- variable object
 	if var:is_simple() or is_variable_constant(orig_var_name) then -- simple variable or constant
-		table.insert(root_var_names_tbl, orig_var_name)
+		if not is_in_table(root_var_names_tbl, orig_var_name) then table.insert(root_var_names_tbl, orig_var_name) end -- prevent duplicates
 	
 	else -- compound variable
 		-- get the variables this compound variable references
@@ -3300,7 +3329,7 @@ function save_linked_info(line_index)
 		local original_var_name = fn:var_name(original_parameter_name)
 		
 		-- Get all linked functions and parameters
-		local links_table = linked_lines[original_function_name] and linked_lines[original_function_name][original_parameter_name] or {}
+		local links_table = linked_lines[original_function_name] and linked_lines[original_function_name][original_parameter_name] or {} -- initialize
 		links_table[original_function_name.."."..original_parameter_name] = true -- save temporarily for recursion
 		local links_table, checked_parents = get_linked_functions_recursive(original_function_name, original_parameter_name, original_var_name, links_table)
 		
@@ -3420,8 +3449,9 @@ function get_linked_functions_recursive(orig_function_name, orig_param_name, ori
 	links_table = links_table or {} -- save output
 	checked_parents = checked_parents or {} -- save checked names to prevent loops
 	
-	-- Get the root parent variables this variable references
-	local parent_var_names_tbl = get_root_parent_variables(original_var_name)
+	-- Get the root parent variables this variable references. Only look for simple variables, not locked variables (constants)
+	-- allow two lines to reference the same constant without being linked.
+	local parent_var_names_tbl = get_root_parent_variables_simple(original_var_name)
 	
 	-- Iterate over the root parent variables and get the root child function.parameter names for each var_name
 	for idx, var_name in ipairs(parent_var_names_tbl) do
@@ -3577,10 +3607,21 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 		-- TODO: what if another parameter of the secondary linked line is linked to a third line? -- should be diminishing deviation from ideal fit, so not important
 		
 		-- Activate datapoints for each linked line window
+		-- Each linked line gets its own local constant which is only used temporarlily for the fitting and it's value won't be saved.
+		-- It can be that multiple closeby secondary lines have local constants overlapping
+		local secondary_window_bounds = {}
 		for func_name, line_idx in pairs(directly_linked_lines_list) do
-			local secondary_window_lines, local_const_name = activate_secondary_window(beginning, ending, func_name, line_idx) -- Format: tbl[func_name][param_name] = true
-			secondary_windows_lines = tableMerge(secondary_windows_lines, secondary_window_lines) -- Format: tbl[func_name][param_name] = true
-			table.insert(local_constant_names, local_const_name)
+			if not is_linked_parameters_finalized(main_line_index, line_idx) then -- don't use window that has already been finalized (or doesn't benefit from fitting again)
+				
+				local secondary_window_lines, window_start, window_end = activate_secondary_window(beginning, ending, func_name, line_idx) -- Format: tbl[func_name][param_name] = true
+				secondary_windows_lines = tableMerge(secondary_windows_lines, secondary_window_lines) -- Format: tbl[func_name][param_name] = true
+				
+				-- Gather window bounds for creating temporary secondary local constants later
+				if window_start and window_end then -- if nil then is inside the main window
+					local bounds = {["beginning"] = window_start, ["line_wl"] = lines_info[lines_info_filename][line_idx]["Wavelength (m)"], ["ending"] = window_end}
+					table.insert(secondary_window_bounds, bounds)
+				end
+			end
 		end
 		
 		-- Remove elements from secondary_windows_lines that are in main_window_lines
@@ -3591,6 +3632,22 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 				end
 			end
 		end
+		
+		-- Iterate over secondary windows and add local constants to these.
+		-- Make sure the Rectangles don't overlap.
+		secondary_window_bounds = merge_linked_windows(secondary_window_bounds)
+		for idx, bounds in ipairs(secondary_window_bounds) do
+			
+			-- Fit temporary local constant for the linked windows
+			local local_const_name = get_secondary_local_const_name(idx)
+			local infinitesimal_medium = minimal_data_value * 1e-6
+			local const_height = F:calculate_expr("min(y if (a and x > "..tostring(bounds.beginning).." and x < "..tostring(bounds.ending).."))") - minimal_data_value + infinitesimal_medium -- infinitesimal protects against Trying to reverse singular matrix error if starting value is 0
+			F:execute("%"..local_const_name.." = RectanglePositive(height = ~{"..tostring(const_height).."}, start = "..tostring(bounds.beginning)..", end = "..tostring(bounds.ending)..")")
+			F:execute("F += %"..local_const_name)
+			
+			table.insert(local_constant_names, local_const_name)
+		end
+		
 		
 		-- Iterate over linked lines and get the lines of those windows (narrower than main window)
 		--secondary_windows_lines = gather_secondary_lines_iterate(directly_linked_lines_list) -- Format: tbl[func_name][param_name] = true
@@ -3684,7 +3741,7 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 		end
 		
 		-- TODO: save secondary window local constant if the linked line won't be fitted again
-		--if fitted_lines_params[function_name] and fitted_lines_params[function_name][param_name] then end
+		--if finalized_lines_params[function_name] and finalized_lines_params[function_name][param_name] then end
 		
 		-- Delete the temporary background constants of secondary windows
 		for idx, func_name in ipairs(local_constant_names) do
@@ -3700,6 +3757,87 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	end
 end
 
+-- Checks all linked window bounds and creates new window ranges for local constants, so that no
+-- windows overlap and previously overlapping windows touch instead at the center wavelength of the two linked lines.
+-- Function mostly from ChatGPT 4o.
+function merge_linked_windows(windows)
+	db("merge_linked_windows", 5)
+	
+    -- Sort windows by their "beginning"
+    table.sort(windows, function(a, b)
+        return a["beginning"] < b["beginning"]
+    end)
+	
+    local merged = {}
+    local i = 1
+	
+	-- Iterate over windows
+    while i <= #windows do
+        local current = {
+            ["beginning"] = windows[i]["beginning"],
+            ["line_wl"] = windows[i]["line_wl"],
+            ["ending"] = windows[i]["ending"]
+        }
+		
+		-- Iterate over the windows that follow the current one while there is overlap
+        local j = i + 1
+        while j <= #windows do
+            local next = windows[j]
+			
+			-- Overlap detected
+            if current["ending"] >= next["beginning"] then
+				
+				-- If next window is fully inside the current one then simply ignore it.
+				local next_is_inside_current = current["ending"] >= next["ending"]
+				if not next_is_inside_current then
+					
+					-- Adjust current and next so they touch at midpoint
+					local midpoint = (current["line_wl"] + next["line_wl"]) / 2
+					current["ending"] = midpoint
+					next["beginning"] = midpoint
+				end
+				
+				-- Move to next window for continued comparison
+				j = j + 1
+			
+			-- No overlap, save the window and move on to the next window
+            else
+                break
+            end
+        end
+		
+		-- Save the window and move on to the next one that isn't checked yet
+        table.insert(merged, current)
+        i = j
+    end
+	
+    return merged
+end
+
+-- Check if the parameters of the secondary line that are linked to main line are all finalized (second line doesn't need to be finalized)
+function is_linked_parameters_finalized(main_line_idx, second_line_idx)
+	local main_line_name = lines_data[main_line_idx].name
+	local second_line_name = lines_data[second_line_idx].name
+	
+	-- Iterate over parameters for the main line, check for links to the second line
+	for parameter, _ in pairs(lines_data[main_line_idx].parameters) do
+		
+		-- Iterate over linked line.params
+		if linked_lines[main_line_name] and linked_lines[main_line_name][parameter] then
+			for func_param, links_tbl in pairs(linked_lines[main_line_name][parameter]) do
+				
+				-- Check if the second line parameter is linked to the main line parameter and if that parameter is finalized
+				local is_link = (func_param == second_line_name.."."..parameter)
+				local param_finalized = (not is_link) or (finalized_lines_params[second_line_name] and finalized_lines_params[second_line_name][parameter] and true) or false
+				
+				-- At least one of the linked parameters isn't finalized yet -- TODO: check root variables instead 
+				if not param_finalized then return false end
+			end
+		end
+	end
+	
+	return true
+end
 
 -- Activate secondary window of the line linked to the main line
 function activate_secondary_window(main_window_beginning, main_window_ending, func_name, line_idx)
@@ -3726,15 +3864,10 @@ function activate_secondary_window(main_window_beginning, main_window_ending, fu
 	-- Activate dataset points in the influence diameter (no extra) of the line linked to the main line
 	activate_points(beginning2, ending2)
 	
-	-- Fit temporary local constant for the linked windows
-	local local_constant_name = get_secondary_local_const_name(line_idx)
-	F:execute("%"..local_constant_name.." = RectanglePositive(height = ~{min(y if (a and x > "..tostring(beginning2).." and x < "..tostring(ending2).."))}, start = "..tostring(beginning2)..", end = "..tostring(ending2)..")")
-	F:execute("F += %"..local_constant_name)
-	
 	-- Gather the lines of the secondary window part that doesn't interact with the main window
 	secondary_window_lines = gather_secondary_lines(line_idx, beginning2, ending2) -- Format: tbl[func_name][param_name] = true
 	
-	return secondary_window_lines, local_constant_name
+	return secondary_window_lines, beginning2, ending2
 end
 
 
@@ -3878,7 +4011,7 @@ function gather_secondary_lines_iterate(linked_lines_list)
 	for func_name, line_idx in pairs(linked_lines_list) do
 		
 		-- Ignore linked lines which have had all of its parameters fitted already
-		if not is_all_params_fitted(line_idx) then
+		if not is_all_params_finalized(line_idx) then
 			
 			-- Get range in which lines influence the current line
 			local beginning, ending = get_influence_range(line_idx)
@@ -3911,7 +4044,7 @@ function gather_secondary_lines(line_idx, beginning2, ending2)
 	local lines_params_table = {}
 	
 	-- Ignore linked lines which have had all of its parameters fitted already
-	if is_all_params_fitted(line_idx) then return lines_params_table end
+	if is_all_params_finalized(line_idx) then return lines_params_table end
 	
 	-- Gather lines in secondary line influence range
 	local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], beginning2, ending2) -- Format: tbl[line_index] = true
@@ -3932,16 +4065,16 @@ function gather_secondary_lines(line_idx, beginning2, ending2)
 end
 
 -- Check if all parameters of a line have been fitted and therefore if the line is fitted
-function is_all_params_fitted(line_index)
-	local all_params_fitted = true
+function is_all_params_finalized(line_index)
+	local all_params_finalized = true
 	local line_name = lines_data[line_index].name
 	
 	-- Iterate over parameters for that line and save the line-parameter combo
 	for parameter, tbl in pairs(lines_data[line_index].parameters) do
-		all_params_fitted = all_params_fitted and fitted_lines_params[line_name] and fitted_lines_params[line_name][parameter] and true
+		all_params_finalized = all_params_finalized and finalized_lines_params[line_name] and finalized_lines_params[line_name][parameter] and true
 	end
 	
-	return all_params_fitted
+	return all_params_finalized
 end
 
 -- return the index of a line with the given name
@@ -3953,7 +4086,7 @@ function get_line_index_by_name(function_name)
 end
 
 
--- Unlock existing lines or create a new line in dataset
+-- Unlock existing lines
 function activate_lines(lines_params_table)
 	db("activate_lines",2)
 	
@@ -4033,7 +4166,7 @@ end
 function lock_parameter(main_line_index, function_name, line_index, param_name)
 	db("lock_parameter", 4)
 	
-	if fitted_lines_params[function_name] and fitted_lines_params[function_name][param_name] then return end -- the parameter of the line has been finalized
+	if finalized_lines_params[function_name] and finalized_lines_params[function_name][param_name] then return end -- the parameter of the line has been finalized
 	
 	local var_names = lines_data[line_index]["parameters"][param_name].root_vars.names
 	local var_types = lines_data[line_index]["parameters"][param_name].root_vars.v_types
@@ -4054,7 +4187,7 @@ end
 function lock_variable_save_errors(main_line_index, function_name, line_index, param_name, var_types, var_index, root_var_name)
 	db("lock_variable_save_errors", 5)
 	
-	if fitted_variables[root_var_name] then return end -- variable has been fitted and finalized
+	if finalized_variables[root_var_name] then return end -- variable has been fitted and finalized
 	
 	-- If it's a random line then simply lock the variable
 	if (main_line_index ~= line_index) then
@@ -4103,7 +4236,7 @@ function lock_variable_save_errors(main_line_index, function_name, line_index, p
 	end
 	
 	-- Register that the root variable has been fitted
-	fitted_variables[root_var_name] = true
+	finalized_variables[root_var_name] = true
 	
 	-- Lock the variable
 	F:execute("$" ..root_var_name.. " = {$" ..root_var_name.. "}")
@@ -4135,13 +4268,13 @@ function check_all_root_vars_fitted(line_index, parameter_name)
 	for var_index, root_var_name in ipairs(var_names) do
 		
 		-- Check if each variable is fitted
-		all_vars_fitted = all_vars_fitted and fitted_variables[root_var_name]
+		all_vars_fitted = all_vars_fitted and finalized_variables[root_var_name]
 	end
 	
 	if all_vars_fitted then
 		local function_name = lines_data[line_index].name
-		fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
-		fitted_lines_params[function_name][parameter_name] = true
+		finalized_lines_params[function_name] = finalized_lines_params[function_name] or {}
+		finalized_lines_params[function_name][parameter_name] = true
 	end
 end
 
@@ -4276,15 +4409,15 @@ function create_dummy_function(line_index)
 	end
 	
 	-- Register its parameters as fitted and root variables as fitted
-	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
+	finalized_lines_params[function_name] = finalized_lines_params[function_name] or {}
 	for idx, parameter_name in ipairs(parameter_names) do
 		
 		-- Register its parameters as fitted
-		fitted_lines_params[function_name][parameter_name] = true
+		finalized_lines_params[function_name][parameter_name] = true
 		
 		-- Register its root variables as fitted
 		local direct_var_name = get_direct_variable_name(function_name, parameter_name)
-		fitted_variables[direct_var_name] = true
+		finalized_variables[direct_var_name] = true
 	end
 	
 	-- if line is guessed without any active datapoints then there's error 
@@ -4310,7 +4443,7 @@ function nullify_line(line_index, polyline_values)
 	db("nullify_line", 3)
 	
 	-- Skip linked lines
-	if is_linked_line(line_index) then return end
+	if is_linked_line(line_index) then return end -- TODO: nullify if all linked lines should be nullified
 	
 	-- Get function height and area
 	local function_name = lines_data[line_index].name
@@ -4380,7 +4513,7 @@ function unlock_parameter(line_index, parameter_name)
 	
 	-- The parameter has already been fitted and finalized
 	local function_name = lines_data[line_index].name
-	if fitted_lines_params[function_name] and fitted_lines_params[function_name][parameter_name] then return end
+	if finalized_lines_params[function_name] and finalized_lines_params[function_name][parameter_name] then return end
 	
 	-- Get associated root parent variable names and types
 	local variable_names = lines_data[line_index]["parameters"][parameter_name].root_vars.names
@@ -4393,7 +4526,7 @@ function unlock_parameter(line_index, parameter_name)
 		else variable_type = var_types end
 		
 		-- Check if the variable has been fitted and finalized
-		if not fitted_variables[variable_name] then
+		if not finalized_variables[variable_name] then
 			
 			-- Unlock the parameter with its value
 			if (variable_type == "simple") or (variable_type == "linked_simple") or (variable_type == "linked") then
@@ -4413,7 +4546,7 @@ function turn_into_dummy(line_index)
 	db("turn_into_dummy",3)
 	
 	local function_name = lines_data[line_index].name
-	fitted_lines_params[function_name] = fitted_lines_params[function_name] or {}
+	finalized_lines_params[function_name] = finalized_lines_params[function_name] or {}
 	
 	-- Register the line as dummy
 	lines_data[line_index].type = "dummy"
@@ -4425,10 +4558,10 @@ function turn_into_dummy(line_index)
 		local direct_var_name = get_direct_variable_name(function_name, param_name)
 		
 		-- Register all parameters as fitted
-		fitted_lines_params[function_name][param_name] = true
+		finalized_lines_params[function_name][param_name] = true
 		
 		-- Register variable as fitted
-		fitted_variables[direct_var_name] = true
+		finalized_variables[direct_var_name] = true
 		
 		-- Register new root variables
 		lines_data[line_index]["parameters"][param_name]["root_vars"]["names"] = {direct_var_name}
