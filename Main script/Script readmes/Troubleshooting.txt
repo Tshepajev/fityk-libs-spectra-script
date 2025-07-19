@@ -1,0 +1,140 @@
+This file contains tips for debugging errors, crashes and otherwise weird behavior.
+I've encountered many issues which were easy to fix, but for certain, some bugs persist. 
+This file exists if you want to fix the bugs before I am able to.
+I created this file only in v4.1, so I will add things here as I stumble upon issues.
+
+If you encounter an error or weird behavior then please let me know! 
+Even the info that a bug exists helps, although for me to fix it, I need to know how to create it.
+Bonus points if you can replicate the error and describe the process to me, that helps fixing the bug.
+The script has grown so large that I don't have enough manpower to test every nuance, so you'd help a lot.
+
+
+Sometimes the issue could be anything but restarting the program (and therefore script) would fix it.
+
+Sometimes the error in Fityk log points to the right line, but sometimes it's useless. 
+The most foolproof way to debug something is to write print("something") into the code and see where the
+code reaches before crashing. 
+There is also the debug_mode at the end of the user_constants.lua file. 
+The larger the number you write in debug_mode the more frequently called functions will print its name before 
+running other code in the function. This helps to locate the last function which was called and the ones
+before it.
+Ctrl+F is your best friend when checking which variable comes from where and which functions are used where.
+printTable() function can be used to print anything, including table contents
+printTableFlat() function is like printTable() but in a compact way in case the output doesn't fit into the 
+GUI output.
+
+
+If the script crashes before even showing the yes/no user input buttons then there's a LUA syntax error.
+Usually the red error points to the line where the error occurred (e.g. line has "local var == 1").
+Other times it points to a completely random location, which means usually that you didn't write "end"
+to the right place (e.g. started "if" but forgot to close it).
+In the latter case the easiest way to debug it is to open an online LUA compiler, copy-paste the code, and
+then start deleting the contents of the code. 
+When the error changes then you have deleted the problematic part.
+
+Worst bugs are when code runs and doesn't crash but acts weird.
+This is usually because a variable hasn't been defined in a function but that variable gets a value from the
+outer scope, that is, from the function that called it.
+These kind of errors are tough to debug.
+
+
+"
+Lua Error:
+at 63, near `9e+308,0),': unexpected token: `,'
+"
+Such errors are kind of useless because 63 didn't point to any meaningful location (not even in the function).
+The problem in this case was creating a Fityk function but formatting the string wrong 
+("Polyline(0,0, 9e308,0), 100,0)"). Other than writing a lot of print() statements, you have to guess why 
+there was an error. In this case there was one ")" too much and it actually showed in the error.
+In this case, printing every variable before the crash helps to debug it.
+
+
+"
+Error: Trying to reverse singular matrix. Column 0 is zeroed.
+"
+I haven't found out what causes this but it's usually when Fityk is unable to fit the line 
+for some internal reason (e.g. line doesn't have derivatives).
+I've had this error pop up also on a spectrum in a series where other spectra fitted fine.
+I've had this error when fitting a Rectangle function (locked start and end) and the height is 0. 
+If the height was 0 + infinitesimal then Fityk didn't have a problem with fitting.
+E.g. this error is shown when trying to fit a polyline with 20 elements but sometimes fitting succeeds 
+(e.g. with 6 elements when making a step function).
+This error is also shown when trying to fit e.g. a Gaussian on flat dataset (points are active but all active
+points are 0 and therefore, there is no bell shaped curve). This doesn't raise an error if the flat dataset
+is e.g. value 1 because then Gaussian simply fits into a very wide bell (realistically a constant).
+
+
+"
+File not loaded or all points inactive
+"
+This is because you don't have datapoints or no datapoints are active (at least near the current line).
+The error gets printed even when you're just clicking around in the GUI, so often times if there were no other
+issues then this error is harmless.
+
+
+"
+Lua Error:
+guess: empty range
+File not loaded or all points inactive
+"
+The script is trying to guess a function (guess instead of declaring a fn and adding to F model), but there
+is no data to guess on.
+Guess means that e.g. Fityk finds average y under the Rectangle function but if data is inactive then avgy fails.
+E.g. this happens when a line is too far from active points, so that it's influence doesn't reach active points
+("default domain of variable" in settings, a.k.a. function value is negligible at active points).
+
+
+"
+Error: No parametrized functions are used in the model.
+"
+All variables of the functions are locked (constants, not simple variables or compound variables and then constants).
+There is nothing to fit because Fityk modifies only simple variables during fitting.
+
+
+"
+Lua Error:
+Singular matrix cannot be reversed. (zeroed column 2).
+"
+I don't know yet why this happens. I got this when trying to extract an error from a simple variable.
+In Fityk command line it's caused by "p $var.error". 
+I think this happens when you open a session file with fitted lines and then try to use command line to get the error
+value of the variable.
+Then the covariance matrix is all zeroes (fitting info is lost).
+I've had this error log also when the fitting result looks good but the covariance matrix is all zeros.
+Restarting the program has solved the issue sometimes.
+
+
+When running fit nothing happens. Fitting process doesn't even seem to start.
+There are two cases. One is that fit happens but it converges immediately (already has a good fit) and the verbosity 
+of Fityk is too low to show it. You can check this by adjusting "Verbosity level" in Fityk settings.
+For the other case, I don't know the cause of this but I think it happens when the fit is stuck in a local 
+minimum or something, because fitting doesn't start even with a very poor fit.
+Usually Fityk is stuck in this state until drastic changes take place like deleting most lines.
+Changing line parameters a lot or even adding a line usually doesn't fix this once Fityk is in this state.
+Restarting the program has solved the issue.
+From old readme: this error was caused when the WSSR was nan. This is usually because a line has some parameter 
+that is very large (e.g. shape 1e18). 
+Changing it back to normal value allows fitting normally.
+
+
+There is sometimes an issue in the GUI that when you zoom in near the polyline then the polyline disappears.
+Zooming out makes the polyline appear again.
+This is visual issue and the data saves the local constants properly.
+
+
+Sometimes when using GUI it throws "Error: column index out of range: [nr]" error. This is because a dataset was
+selected but some dataset before it was deleted, so now a dataset that is out of bounds is selected. To fix it 
+execute command "use @0". This re-selects dataset 0 (always exists, even if empty) for data transformations.
+
+
+Sometimes Fityk throws "MinGW Runtime Assertion" errors (probably after deleting line functions). Clicking "ignore"
+has never resulted any bad things for me.
+
+
+Sometimes Fityk throws mouse focus lost errors if the script is accessing the console exacly when you click somewhere. 
+Clicking "ignore" has never resulted any bad things for me.
+
+
+When opening a session in a new computer the session might not load the data because of an error with the working
+directory. This happens when previous session defined the working directory (with "set cwd = ") but the new computer
+doesn't have that directory. The fix is to delete the "set cwd" line from the session file.
