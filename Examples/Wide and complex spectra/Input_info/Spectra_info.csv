@@ -1,3 +1,4 @@
 Filename,Pixel correction filename,Lines filename,Background filename,Nr. of spectra accumulations,Camera pre amplification,Camera gain,Camera gate width (s),Series length,Additional multiplier,Additional additive
-HFGC_1c_P1,Pixel_info.csv,Lines_info_v9_selected.csv,,1,,4000,0.000001,12,1,0
-14IWG1A_3a_P1,Pixel_info.csv,Lines_info_v9_selected.csv,,,,4000,0.000001,22,1,0
+HFGC_1c_P1_001,Pixel_info.csv,Lines_info wide example.csv,,1,1,4000,0.000001,12,1,0
+14IWG1A_3a_P1_001,Pixel_info.csv,Lines_info wide example.csv,,,,4000,0.000001,22,1,0
+492_2X8_R7C3C7_0001 2X08 - R7 C3-C7,Pixel_info 492.csv,,,,,,,5,,
