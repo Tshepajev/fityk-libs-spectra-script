@@ -1,8 +1,9 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.3.1
+-- Script version: 4.3.2
 -- Author: Jasper Ristkok
 
 --[[
+
 Written for use with LIBS (atomic) spectra gained from SOLIS and Sophi nXt software
 with Andor iStar340T ICCD camera.
 The script could possibly be used for other applications but some
@@ -28,6 +29,9 @@ remain the same on drawn images. In other words: make 1 dataset the
 way you want it to look, click on the dataset @0 and then run the script.
 
 MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break space that e.g. excel sometimes outputs.
+
+Other specifics and instructions are in the readme.md file (compile with online tool or read in GitHub).
+
 ]]
 
 
@@ -133,6 +137,14 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 -- TODO: use polyline directly instead of constants as local constant?
 -- TODO: improve local constant algorithm when multiple active regions of linked lines are fitted
 
+-- Whether to wrap the code in debug hooks and count nr of calls and elapsed time for each function
+-- This is only for development. It enables counting amount of time taken for each function in the script.
+time_function_calls = false
+
+-- If this is true then debugging with time_function_calls returns overall time for a function, including its sub-functions.
+-- If this is false then debugging with time_function_calls returns the simple time for a function, without its sub-functions
+time_sub_fns = false
+
 -- Hack to stop frozen script safely
 stopscript = false
 
@@ -189,13 +201,49 @@ series_fit_errors = {}
 -------------------------------------------------------------------------------------------------------------
 -- MAIN PROGRAM
 -------------------------------------------------------------------------------------------------------------
+
 -- Loads data from files into memory, finds defined peaks, fits them, exports the data and plots the graphs.
 function main_program()
+	
 	if not file_exists(info_folder.."_user_constants.lua") then
 		printe("main_program() | _user_constants.lua is not in info folder. info_folder: "..info_folder)
 		return
 	end
 	
+	-- If debug mode is active then time each function
+	-- Iterates over files, fits lines and outputs data
+	run_and_debug()
+	
+	print("Script finished")
+end
+
+-- If debug mode is active then wrap and time each function
+function run_and_debug()
+	
+	-- If debug mode is active then time each function
+	local profile = {}
+	if time_function_calls then
+		fire_hook(profile) -- enable hook
+	end
+	
+	-- Main code, iterates over files, fits lines and outputs data
+	run_program()
+	
+	-- If debug mode is active then disable hooks and print functions run time 
+	if time_function_calls then
+		
+		-- Disable the hook
+		debug.sethook()
+		
+		-- Print debug times
+		for name, tbl in pairs(profile) do
+			print(name, tbl.calls, tbl.returns, tbl.time)
+		end
+	end
+end
+
+-- Main code, iterates over files, fits lines and outputs data
+function run_program()
 	-- Read in user constants from separate script (separate for reproducibility of analysis)
 	F:execute("exec \'"..info_folder.."_user_constants.lua\'")
 	
@@ -230,8 +278,6 @@ function main_program()
 	
 	-- Iterates over files, fits lines and outputs data
 	process_data(file_check, experiment_check)
-	
-	print("Script finished")
 end
 
 
@@ -267,7 +313,7 @@ function initialize_fityk()
 	F:execute("set lm_max_lambda = 1e+020")
 	
 	-- VoigtFWHM declaration
-	pcall(function() -- Try to undefine existing function definition to prevent crash
+	dbg_pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine VoigtFWHM")
 	end)
 	-- Create Voigt profile which takes FWHM as its argument, Fityk can't handle non-continuous functions due to ternary operator ("?") not supported.
@@ -278,7 +324,7 @@ function initialize_fityk()
 	
 	
 	-- VoigtApparatus declaration
-	pcall(function() -- Try to undefine existing function definition to prevent crash
+	dbg_pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine VoigtApparatus")
 	end)
 	-- Create Voigt profile which locks the Gaussian part width as the apparatus function.
@@ -289,7 +335,7 @@ function initialize_fityk()
 	
 	-- Rectangle function declaration. The start and end parameters need to be locked, otherwise Fityk throws 
 	-- "Error: Trying to reverse singular matrix. Column 1 is zeroed."
-	pcall(function() -- Try to undefine existing function definition to prevent crash
+	dbg_pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine Rectangle")
 	end)
 	F:execute("define Rectangle(height=avgy, start, end) = Sigmoid(0, height, start, 1e-300) + Sigmoid(0, -height, end, 1e-300)")
@@ -300,7 +346,7 @@ function initialize_fityk()
 	
 	
 	-- RectanglePositive function declaration. Same as Rectangle but height is only positive.
-	pcall(function() -- Try to undefine existing function definition to prevent crash
+	dbg_pcall(function() -- Try to undefine existing function definition to prevent crash
 		F:execute("undefine RectanglePositive")
 	end)
 	F:execute("define RectanglePositive(height=avgy, start, end) = Sigmoid(0, abs(height), start, 1e-300) + Sigmoid(0, -abs(height), end, 1e-300)")
@@ -2502,7 +2548,7 @@ function create_line(line_index, minimal_data_value, root_variables, max_height_
 	
 	if guess_parameters then
 		-- Possible error catching (if peak is outside of the range)
-		local status, err = pcall(function() F:execute(tostring(guess_parameters)) end)
+		local status, err = dbg_pcall(function() F:execute(tostring(guess_parameters)) end)
 		
 		-- Initialize variable types for that line
 		if status then
@@ -3108,7 +3154,7 @@ function parse_var_declaration_expression(expression, function_name, expressions
 	if declared_var_name then -- is variable declaration
 		
 		-- Execute the expression and catch errors
-		local status, err = pcall(function()
+		local status, err = dbg_pcall(function()
 			F:execute(expression)
 		end)
 		
@@ -3180,7 +3226,7 @@ function parse_and_execute_parameter_expression(expression, line_index, function
 	end
 	
 	-- Execute the expression and catch errors
-	local status, err = pcall(function() 
+	local status, err = dbg_pcall(function() 
 		
 		-- add function name in the beginning and execute
 		expression = "%"..function_name.."."..expression
@@ -3671,7 +3717,7 @@ function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_da
 	
 	
 	-- catch error in case only dummies are to be fitted
-	local status, err = pcall(function() 
+	local status, err = dbg_pcall(function() 
 		F:execute("@0: fit")
 		--F:execute("@0: fit") -- fit 2x to avoid local minima
 	end)
@@ -5248,6 +5294,158 @@ end
 -- Utility functions
 -------------------------------------------------------------------------------------------------------------
 
+
+-- Enable hook to count time spent on running each function
+-- This isn't percise because LUA and Fityk also use C and debug method works only with pure LUA.
+function fire_hook(profile)
+	local stack = {}
+	local clock = os.clock
+	local getinfo = debug.getinfo
+	
+	-- Localize functions to make hook faster
+	local save_fn_time = save_fn_time
+	local measure_time = measure_time
+	
+	-- Overall time for a function, including its sub-functions
+	if time_sub_fns then
+		
+		-- Hook function to call if you want overall time for a function, including its sub-functions
+		local function fn_time_hook(event)
+			local info = getinfo(2, "Sn") -- selects fields source, short_src, what, and linedefined; and name and namewhat
+			
+			-- get function name or line in the code
+			local name = info.name or ("[" ..info.short_src.. ":" ..info.linedefined.. "]")
+			
+			-- Initialize profiler instance
+			profile[name] = profile[name] or {["calls"] = 0, ["returns"] = 0, ["time"] = 0}
+			
+			-- Some error, read this as the return of the last function
+			if (name == "empty_exception_fn") and (event == "call") then -- exception was raised by last fn, assuming it always calls
+				profile[name].calls = profile[name].calls + 1
+				
+				-- Stack is empty
+				if stack[#stack] == nil then return end
+				
+				-- Save last function like it returned now
+				name = stack[#stack][1]
+				profile[name].returns = profile[name].returns + 1
+				
+				-- Save the time spent between call and return
+				save_fn_time(profile, stack, clock)
+			
+			
+			-- Register call time of the function
+			elseif event == "call" then
+				profile[name].calls = profile[name].calls + 1
+				stack[#stack + 1] = {name, clock()}
+			
+			
+			-- Register the return time of the function and calculate function run time
+			elseif event == "return" then
+				profile[name].returns = profile[name].returns + 1
+				
+				-- Stack is empty
+				if stack[#stack] == nil then return end
+				
+				-- no exception but last call wasn't for this function, probably C involved
+				if (stack[#stack][1] ~= name) then
+					
+					-- Last call was for the right function, log the time as both functions together
+					local last_is_correct = (#stack > 1) and (stack[#stack - 1][1] == name)
+					if last_is_correct then
+						
+						-- Modify stack
+						name = name.. " and " ..stack[#stack][1]
+						stack[#stack][1] = name -- insert combination of both names
+					end
+				end
+				
+				-- Save the time spent between the call and the return
+				save_fn_time(profile, stack, clock)
+			end
+		end
+		
+		-- Hooks on function call and function return
+		debug.sethook(fn_time_hook, "crt")
+	
+	-- Simple time for a function, without its sub-functions
+	else
+		
+		-- Hook function to call if you want only the simple time for a function, without its sub-functions
+		local function fn_time_no_subfn_hook(event)
+			local info = getinfo(2, "Sn") -- selects fields source, short_src, what, and linedefined; and name and namewhat
+			
+			-- get function name or line in the code
+			local name = info.name or ("[" ..info.short_src.. ":" ..info.linedefined.. "]")
+			
+			-- Initialize profiler instance
+			profile[name] = profile[name] or {["calls"] = 0, ["returns"] = 0, ["time"] = 0}
+			
+			-- Register call time of the function
+			if event == "call" then
+				profile[name].calls = profile[name].calls + 1
+				
+				-- Save time spent on parent function since last timed event, keeping it in stack
+				if stack[#stack] then measure_time(profile, stack, clock) end
+				
+				-- Push new function into stack and start timer
+				stack[#stack+1] = {name, clock()}
+			
+			-- Register the return time of the function and calculate the finalized function run time
+			elseif event == "return" then
+				profile[name].returns = profile[name].returns + 1
+				
+				-- Stack is empty
+				if stack[#stack] == nil then return end
+				
+				-- Save the time from the last event of the current fn up until returning
+				save_fn_time(profile, stack, clock)
+				
+				-- Reset timer for parent fn
+				stack[#stack][2] = clock()
+			end
+		end
+		
+		-- Hooks on function call and function return
+		debug.sethook(fn_time_no_subfn_hook, "crt")
+	end
+end
+
+-- Calculate and save time spent on current function
+function save_fn_time(profile, stack, clock)
+	measure_time(profile, stack, clock)
+	
+	-- Stop timer for previous fn and remove last stack element
+	stack[#stack] = nil
+end
+
+-- Calculate and save time spent on current function since last timed event
+function measure_time(profile, stack, clock)
+	
+	-- Last called function
+	local data = stack[#stack]
+	
+	-- Calculate passed time
+	local funcname, t0 = data[1], data[2]
+	local dt = clock() - t0
+	
+	-- Add the time to global timer
+	profile[funcname].time = profile[funcname].time + dt
+end
+
+
+-- Wrap pcall in such a way that it executes an empty function for hook counting
+function dbg_pcall(fn, ...)
+	local results = table.pack(pcall(fn, ...))
+	
+	-- exception was caught, run an empty function
+	if not results[1] then empty_exception_fn() end
+	
+	return table.unpack(results)
+end
+
+function empty_exception_fn() end
+
 -- prints if debug mode is active. The lower the priority the sooner it's printed.
 -- If the debug message gets repeated multiple times then print the number of repeats
 debug_message = nil
@@ -5286,7 +5484,7 @@ end
 
 -- Wraps provided fn in pcall, catches the error and prints it. If second variable is a function then executes it when not status
 function wrap(fn, fn_error, ...)
-	local results = table.pack(pcall(fn, ...))
+	local results = table.pack(dbg_pcall(fn, ...))
 	local status = results[1]
 	if status then -- return all values except the first one (which is the success flag)
         return table.unpack(results, 2, results.n)
@@ -5298,7 +5496,7 @@ end
 
 -- Wraps provided fn in pcall, doesn't print the error
 function wrapSilent(fn, fn_error, ...)
-	local results = table.pack(pcall(fn, ...))
+	local results = table.pack(dbg_pcall(fn, ...))
 	if results[1] then
         return table.unpack(results, 2, results.n) -- return all values except the first one (which is the success flag)
     else
@@ -5308,7 +5506,7 @@ end
 
 -- Wraps provided fn in pcall, catches the error and prints it with user defined string
 function wrapVerbose(fn, extra_str, ...)
-	local results = table.pack(pcall(fn, ...))
+	local results = table.pack(dbg_pcall(fn, ...))
 	local status = results[1]
 	
 	-- return all values except the first one (which is the success flag)
@@ -6196,6 +6394,9 @@ end
 -------------------------------------------------------------------------------------------------------------
 -- MAIN PROGRAM
 -------------------------------------------------------------------------------------------------------------
+
+-- Disable the hook if it exists from previous run
+debug.sethook()
 
 -- Run the script
 main_program()
