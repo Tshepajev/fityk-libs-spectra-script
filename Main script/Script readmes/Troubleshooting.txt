@@ -138,3 +138,7 @@ Clicking "ignore" has never resulted any bad things for me.
 When opening a session in a new computer the session might not load the data because of an error with the working
 directory. This happens when previous session defined the working directory (with "set cwd = ") but the new computer
 doesn't have that directory. The fix is to delete the "set cwd" line from the session file.
+
+
+time_function_calls global variable enables the program mode where it prints out each used function, 
+how many times it was called, how many times it returned, and the elapsed time during the function call.
