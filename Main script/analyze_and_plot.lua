@@ -30,7 +30,8 @@ way you want it to look, click on the dataset @0 and then run the script.
 
 MAKE SURE THAT INPUT IS UTF-8! Lua can't handle unicode characters like no break space that e.g. excel sometimes outputs.
 
-Other specifics and instructions are in the readme.md file (compile with online tool or read in GitHub).
+Other specifics and instructions are in the readme.md file in root folder (compile with online tool or read in GitHub) 
+and more specific important instructions in "README script.txt" file in "Script readmes" folder.
 
 ]]
 
@@ -168,6 +169,9 @@ spectra_info, pixel_info, lines_info = {},{},{}
 -- The filename for the Lines_info*.csv to use with the currently processed spectra series
 lines_info_filename = nil
 
+-- List of all used function names as defined in the Lines_info*.csv
+used_function_names = {}
+
 -- The format in which the filename is constructed
 filename_identifier_start = nil -- used when accessing Input_data files
 filename_identifier_start_clean = nil -- used by default, except for when accessing Input_data files
@@ -265,7 +269,7 @@ function run_program()
 	-- Load info from info files to LUA tables
 	load_info()
 	
-	-- resets Fityk and asks user for run parameters
+	-- Asks user for run parameters
 	local file_check, experiment_check, continue = user_query()
 	
 	-- Error in initialization phase
@@ -457,6 +461,9 @@ function load_info()
 	
 	-- Fill in fields which didn't have a column in input info
 	finalize_lines_info()
+	
+	-- Save all function names that are used in used_function_names table
+	gather_function_names()
 	
 	-- Iterate over files containing spectra info
 	for i,filename in ipairs(spectrum_files) do
@@ -885,6 +892,76 @@ function correct_lines_info()
 	end
 end
 --]]
+
+
+-- Gather the names of all used functions
+function gather_function_names(filename)
+	db("gather_function_names", 1)
+	
+	used_function_names = {}
+	
+	-- Iterate over files
+	for filename, info in pairs(lines_info) do
+		used_function_names[filename] = {}
+		
+		-- Iterate over the lines and save their names
+		for line_index = 1, #info do
+			used_function_names[filename][line_index] = get_fn_name(filename, line_index)
+		end
+	end
+end
+
+-- Get function name by index
+function get_fn_name(filename, line_index)
+	db("get_fn_name", 4)
+	
+	filename = filename or lines_info_filename
+	local sig_numbers = 6
+	
+	-- Get function name
+	local identifier = lines_info[filename][line_index]["Identificator"]
+	
+	local line_position = lines_info[filename][line_index]["Wavelength (m)"]
+	
+	-- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
+	local function_name = identifier.. "_" .. decimalToInteger(line_position, sig_numbers) 
+	
+	-- Check for duplicate locations. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
+	local similar_lines_nr = 0
+	for idx, info in ipairs(lines_info[filename]) do
+		local pos = info["Wavelength (m)"]
+		
+		if idx >= line_index then break -- only read up to current line_index
+		else 
+			if (identifier == info["Identificator"]) and 
+				(decimalToInteger(line_position, sig_numbers) == decimalToInteger(pos, sig_numbers)) then
+				similar_lines_nr = similar_lines_nr + 1
+			end
+		end
+	end
+	similar_lines_nr = (similar_lines_nr > 0) and ("_" ..tostring(similar_lines_nr)) or ""
+	local output_name = function_name.. similar_lines_nr
+	
+	--[[ -- this method doesn't work if the duplicate name lines aren't created (inconsistent output)
+	-- Check for duplicate names. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
+	local existing_line = function_name and F:get_function(function_name)
+	if existing_line then
+		local count = 1
+		local new_name = function_name .. "_" .. tostring(count)
+		
+		-- Iterate indices until no line with that one exists
+		while existing_line do
+			output_name = new_name
+			new_name = function_name .. "_" .. tostring(count)
+			
+			count = count + 1
+			existing_line = function_name and F:get_function(new_name)
+		end
+	end
+	--]]
+	
+	return output_name
+end
 
 
 
@@ -2552,7 +2629,7 @@ function create_line(line_index, minimal_data_value, root_variables, max_height_
 		
 		-- Initialize variable types for that line
 		if status then
-			local function_name = get_fn_name(line_index)
+			local function_name = used_function_names[lines_info_filename][line_index]
 			fn = F:get_function(function_name) -- get the newly created function
 			root_variables[line_index] = get_variables_types(line_index, fn) 
 		
@@ -2584,7 +2661,7 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"]
 	
 	-- Get function name
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Only time when function name can be edited
 	local parameters = "guess %" .. function_name .. " = " .. function_type .. " ("
@@ -2747,58 +2824,6 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	return parameters, max_height_value
 end
 
--- Get function name by index
--- TODO: optimization: create all function names during script initialization
-function get_fn_name(line_index)
-	db("get_fn_name", 4)
-	local sig_numbers = 6
-	
-	-- Get function name
-	local identifier = lines_info[lines_info_filename][line_index]["Identificator"]
-	
-	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
-	
-	-- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
-	local function_name = identifier.. "_" .. decimalToInteger(line_position, sig_numbers) 
-	
-	-- Check for duplicate locations. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
-	local similar_lines_nr = 0
-	for idx, info in ipairs(lines_info[lines_info_filename]) do
-		local pos = info["Wavelength (m)"]
-		
-		if idx >= line_index then break -- only read up to current line_index
-		else 
-			if (identifier == info["Identificator"]) and 
-				(decimalToInteger(line_position, sig_numbers) == decimalToInteger(pos, sig_numbers)) then
-				similar_lines_nr = similar_lines_nr + 1
-			end
-		end
-	end
-	similar_lines_nr = (similar_lines_nr > 0) and ("_" ..tostring(similar_lines_nr)) or ""
-	local output_name = function_name.. similar_lines_nr
-	
-	--[[ -- this method doesn't work if the duplicate name lines aren't created (inconsistent output)
-	-- Check for duplicate names. If they exist then append "_x" to the end of name. Otherwise old line gets rewritten instead of new being made.
-	local existing_line = function_name and F:get_function(function_name)
-	if existing_line then
-		local count = 1
-		local new_name = function_name .. "_" .. tostring(count)
-		
-		-- Iterate indices until no line with that one exists
-		while existing_line do
-			output_name = new_name
-			new_name = function_name .. "_" .. tostring(count)
-			
-			count = count + 1
-			existing_line = function_name and F:get_function(new_name)
-		end
-	end
-	--]]
-	
-	return output_name
-end
-
-
 
 -- Get types for each variable of a function
 function get_variables_types(line_index, fn)
@@ -2807,7 +2832,7 @@ function get_variables_types(line_index, fn)
 	local var_types = {}
 	
 	-- Get parameters
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local param_names = get_parameter_names(function_name)
 	
 	-- Iterate over parameters and save root parent variable names and types
@@ -3101,7 +3126,7 @@ function apply_variable_declarations(line_index)
 	db("apply_variable_declarations", 2)
 	
 	local expressions = {}
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Get the string to parse
 	local linked_string = lines_info[lines_info_filename][line_index]["Linked variables"]
@@ -3176,7 +3201,7 @@ function apply_linked_parameter(line_index, root_variables, check_param_name)
 	
 	if not root_variables[line_index] then return end -- line is dummy -- TODO: revive dummy?
 	
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Get the string to parse
 	local linked_string = lines_info[lines_info_filename][line_index]["Linked variables"]
@@ -3251,7 +3276,7 @@ function get_link_variable_types(line_index, param_name)
 	local var_types = {}
 	
 	-- Get the root variables (simple or constant, not compound)
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local fn = F:get_function(function_name) -- line function
 	local variable_name = fn:var_name(param_name)
 	local root_var_names_tbl = get_root_parent_variables(variable_name)
@@ -3365,7 +3390,7 @@ function save_linked_info(line_index)
 	db("save_linked_info", 2)
 	
 	-- Get function name and function object
-	local original_function_name = get_fn_name(line_index)
+	local original_function_name = used_function_names[lines_info_filename][line_index]
 	local fn = F:get_function(original_function_name)
 	
 	-- Iterate over all parameters
@@ -3412,7 +3437,7 @@ end
 function save_line_info(line_index, root_variables)
 	db("save_line_info", 2)
 	
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local parameter_names = get_parameter_names(function_name)
 	
 	-- Get the line type
@@ -3466,7 +3491,7 @@ function get_parameter_type(line_index, parameter_name, root_variables, linked_t
 	
 	--if not lines_info[lines_info_filename][line_index]["Linked lines"] then return "normal" end -- no links defined
 	
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	--if linked_table and linked_table[function_name] and (not linked_table[function_name][parameter_name]) then return "normal" end -- no links defined for the parameter, but could be locked
 	if linked_table and linked_table[function_name] and linked_table[function_name][parameter_name] then return "linked" end -- links to other lines/parameters defined for the parameter
 	
@@ -4126,7 +4151,7 @@ end
 -- return the index of a line with the given name
 function get_line_index_by_name(function_name)
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local fn_name = get_fn_name(line_index)
+		local fn_name = used_function_names[lines_info_filename][line_index]
 		if fn_name == function_name then return line_index end
 	end
 end
@@ -4426,7 +4451,7 @@ function create_dummy_function(line_index)
 	local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
 	
 	-- Get function name
-	local function_name = get_fn_name(line_index)
+	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	--local sig_numbers = 6
 	--local pos_name = decimalToInteger(line_position, sig_numbers) -- Fityk doesn't allow anything else besides digits, letters and _. Outputs function name in pm.
