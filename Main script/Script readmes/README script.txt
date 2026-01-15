@@ -174,7 +174,7 @@ get divided by the output of the gain function.
 4.c) Create Lines_info*.csv file. That file contains all the necessary info about the lines to be fitted.
 All files corresponding to the wildcard filename are read into memory.
 
-The headers/column names must be: "Wavelength (m),Identificator,Function to fit,To fit (1/0),Fit priority (1 is first),
+The headers/column names must be: "Wavelength (m),Identificator,Function to fit,To fit (1/0),To output (1/0),
 Max position shift (m),Max line fwhm (m),Max influence radius (m),Linked variables"
 If the column is missing (or one field in the column) then the default value is assigned to the missing values.
 The columns don't have to be in specific order and most of the columns don't have to exist but the spelling of the headers matters.
@@ -186,7 +186,7 @@ local default_values = {
 	["Identificator"] = "_",
 	["Function to fit"] = "Voigt",
 	["To fit (1/0)"] = 1,
-	["Fit priority (1 is first)"] = 1,
+	["To output (1/0)"] = 1,
 	["Max position shift (m)"] = 0,
 	["Max line fwhm (m)"] = infinity,
 	["Max influence radius (m)"] = default_max_line_influence_radius,
@@ -209,7 +209,7 @@ The only exception is that when two Lines_info*.csv files reference the same spe
 two files which is defined in Spectra_info*.csv is used.
 The spectral line is "the same in the two files" if all of the fields "Wavelength (m)", "Function to fit", "Identificator" match 
 in the two loaded Lines_info*.csv tables.
-Since the lines are checked by index in the tables then also "To fit (1/0)" and "Fit priority (1 is first)" must be the same.
+Since the lines are checked by index in the tables then also "To fit (1/0)" and "To output (1/0)" must be the same.
 So in short, those 5 field values must be identical for all spectral lines in the two files (neither the order of rows in the files 
 nor the order of the columns in the files matter because the tables are sorted).
 If any one field value in any spectal lines in any files is different then a random file is chosen to represent all experiments.
@@ -217,17 +217,27 @@ Ideally, you would use exact copies of the one Lines_info*.csv file and only cha
 "Max line fwhm (m)", "Max influence radius (m)", and "Linked variables".
 
 The following describes what each column means/does.
-- "Wavelength (m)" is the wavelength the line is at. It's best to consider the actual data instead of the wavelengths from databases.
-The line has to be in range of an active datapoint at the time of creation. 
-Otherwise the script will catch the error and will instead create a dummy line (locked height 0, width and shape 1). 
-The range is defined by line function inside Fityk and I don't know the distance from the line center where the line function 
-value is greater than 0. 
-Therefore, it's best to not fit lines outside of the dataset. 
-This column needs to exist with data filled out. 
-Also, the lines are sorted and created in the order of ascending wavelengths, so, although not necessary for the script, it's best 
-to have lines sorted in the file too. 
-The order of linked variables and defined custom variables depends on the order of the sorted lines 
-(sort by wavelength and if two wavlengths match then by "Fit priority (1 is first)").
+- "Wavelength (m)" is the wavelength the line is at. This column needs to exist with data filled out. It's best to consider the
+actual data instead of the wavelengths from databases. The lines are sorted and created in the order of ascending wavelengths, so, 
+although not necessary for the script, it's best to have lines sorted in the file too. 
+
+If you have two lines at exactly same wavelengths then instead add an infinitesimal to one of these. This ensures always the same 
+order for the lines and is important for the output file and parameter linking. The line/function name format is "Identificator_000000",
+which includes the first 6 significant digits (rounded) of the wavelength. In case of two or more matches of the function name, the
+subsequent functions are named with "Identificator_000000_1" format, in which the last number corresponds to how many lines before it 
+would have the same name. This way each function has a unique name. The order of linked variables and defined custom variables depends 
+on the order of the sorted lines (sort by wavelength and if two wavelengths match then a random one is used first). This is another 
+reason to add an infinitesimal.
+If there are overlapping lines, e.g. a weak and wide and a strong (high) and narrow line overlap, then it's best to generate the strong 
+line first and weak line second (add positive infinitesimal to the weak line) because at line generation the first line has larger 
+weight (contributes more to the points close to the location), being fitted higher and probably gets stuck in local minimum even if 
+the area of the wide line is larger. 
+
+The line has to be in range of an active datapoint at the time of creation. Otherwise the script will catch the error and will instead 
+create a dummy line (locked height 0, width and shape 1). The range is defined by line function inside Fityk and I don't know the 
+distance from the line center where the line function value is greater than 0. Therefore, it's best to not fit lines outside of the 
+dataset. 
+
 
 - "Identificator" is a string to distinguish the line. This is used for the name of the line (e.g. "Be1" in "Be1_457270"). 
 The resulting string must not contain any special characters, including spaces. Fityk doesn't allow anything else besides digits, 
@@ -246,12 +256,11 @@ The apparatus function is defined by apparatus_function_fwhm() function in _user
 - "To fit (1/0)" defines whether to use the row in the file or to skip it (you don't have to delete rows in input file).
 The spectal line is skipped only if the field is 0, even empty field gets used (defaults to 1).
 
-- "Fit priority (1 is first)" sets the order the lines are created if they have the same wavelength. 
-This is relevant when there are overlapping lines, e.g. a weak and wide and a strong (high) and narrow line overlap. 
-Then it's best to generate the strong line first and weak line second because at line generation the first line has larger weight 
-(contributes more to the points close to the location), being fitted higher and probably gets stuck in local minimum even if the area 
-of the wide line is larger. 
-This field doesn't matter if the wavelengths are different.
+- "To output (1/0)" defines whether to use resources to fit the line well and to use it in the output file. The spectal line output is 
+skipped only if the field is 0, even empty field gets used (defaults to 1).
+If it's 0, then the line gets created and fitted if it falls into the influence diameter of another fitted line, but the active window 
+doesn't specifically stop on that line, so the line won't be optimally fitted. The field helps if it's an unimportant but prominent 
+line which would influence nearby important lines if they were fitted and the current one wasn't created.
 
 - "Max position shift (m)" is the maximum shift (radius) left or right in the x-axis allowed for the line during fitting.
 

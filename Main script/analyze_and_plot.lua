@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.4
+-- Script version: 4.5
 -- Author: Jasper Ristkok
 
 --[[
@@ -661,7 +661,7 @@ function validate_pixel_info(filename)
 end
 
 -- Read data from Pixel_info*.csv file into LUA lines_info table
--- Columns: To fit (1/0),Fit priority (1 is first),Wavelength (m),function to fit,Max position shift (m),Max line gwidth/hwhm (m), Identificator,E_k (eV),log(A_ki*g_k/?),line index,
+-- Columns: To fit (1/0),To output (1/0),Wavelength (m),function to fit,Max position shift (m),Max line gwidth/hwhm (m), Identificator,E_k (eV),log(A_ki*g_k/?),line index,
 -- You don't need all the columns filled but the structure must remain. You need to have at least the 3 first columns filled.
 function load_lines_info(filename)
 	db("load_lines_info",4)
@@ -712,13 +712,9 @@ function load_lines_info(filename)
 		::load_lines_info_continue::
 	end
 	
-	-- Sort lines by increasing wavelength and by increasing priority 
+	-- Sort lines by increasing wavelength
 	local function compare_wp(a,b)
-		if a["Wavelength (m)"] == b["Wavelength (m)"] then
-			return (a["Fit priority (1 is first)"] < b["Fit priority (1 is first)"])
-		else
-			return (a["Wavelength (m)"] < b["Wavelength (m)"]) 
-		end
+		return (a["Wavelength (m)"] < b["Wavelength (m)"])
 	end
 	table.sort(lines_info[filename], compare_wp)
 	
@@ -739,7 +735,7 @@ function check_line_info_value(title, value)
 		["Identificator"] = "_",
 		["Function to fit"] = "Voigt",
 		["To fit (1/0)"] = 1, -- line is used by default if the field is empty
-		["Fit priority (1 is first)"] = 1,
+		["To output (1/0)"] = 1,
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity, -- almost infinity
 		["Max influence radius (m)"] = default_max_line_influence_radius,
@@ -811,7 +807,7 @@ function validate_lines_info(filename)
 		["Identificator"] = "_",
 		["Function to fit"] = "Voigt",
 		["To fit (1/0)"] = 1, -- line is used by default if the field is empty
-		["Fit priority (1 is first)"] = 1,
+		["To output (1/0)"] = 1,
 		["Max position shift (m)"] = 0,
 		["Max line fwhm (m)"] = infinity, -- almost infinity
 		["Max influence radius (m)"] = default_max_line_influence_radius,
@@ -2564,7 +2560,7 @@ function fit_functions(data_filename)
 	-- TODO: give the user an option to use fit-all mode in _user_constants.lua
 	
 	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		
 		-- Check whether user wants to stop the script while it's still running
 		check_stopscript()
@@ -2594,7 +2590,7 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 	
 	-- Parse link definitions from Lines_info*.csv and save the expressions into variable_expressions and parameter_expressions
 	local variable_expressions, parameter_expressions = {}, {}
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		
 		-- Parse link definitions from Lines_info*.csv and save the expressions into variable_expressions and parameter_expressions
 		local var_expressions, par_expressions = parse_links_string(line_index)
@@ -2606,7 +2602,7 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 	apply_variable_declarations(variable_expressions)
 	
 	-- Iterate over all the spectral lines and create them
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		create_line(line_index, minimal_data_value, root_variables, max_height_values)
 	end
 	
@@ -2643,7 +2639,7 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 	delete_rogue_variables()
 	
 	-- Iterate over the newly-created links and variables and save the info about the links for future use in linked_lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		save_linked_info(line_index)
 		save_line_info(line_index, root_variables) -- save generic info like line type (dummy) or root variables
 	end
@@ -3529,6 +3525,7 @@ function save_line_info(line_index, root_variables)
 	lines_data[line_index] = {}
 	lines_data[line_index].name = function_name
 	lines_data[line_index].type = line_type
+	lines_data[line_index].output_idx = get_output_line_index(line_index)
 	lines_data[line_index].parameters = {}
 	
 	-- Iterate over parameters
@@ -3560,6 +3557,21 @@ function save_line_info(line_index, root_variables)
 		
 		lines_data[line_index]["parameters"][parameter_name].root_vars.errors = {} -- gets actually defined in lock_lines
 	end
+end
+
+-- Convert line index into output line index (skips if "To output" == 1)
+function get_output_line_index(original_line_index)
+	local line_index = 0
+	
+	for idx = 1, #(lines_info[lines_info_filename]) do
+		if lines_info[lines_info_filename][idx]["To output (1/0)"] ~= 0 then
+			line_index = line_index + 1
+		end
+		
+		if idx == original_line_index then break end
+	end
+	
+	return line_index
 end
 
 -- Check if the parameter is normal, locked (constant), linked or simple (linked but only to a simple variable and nothing else)
@@ -3650,7 +3662,7 @@ function lock_lines_simple()
 	db("lock_lines_simple", 3)
 	
 	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		lock_parameters_simple(line_index)
 	end
 end
@@ -3678,7 +3690,10 @@ end
 function fit_one_line(main_line_index, angle_errors, polyline_values, minimal_data_value)
 	db("fit_one_line", 2)
 	
-	local function_name = lines_data[main_line_index].name
+	-- Skip if it's not an important line
+	if lines_info[lines_info_filename][main_line_index]["To output (1/0)"] == 0 then return end
+	
+	local function_name = used_function_names[lines_info_filename][main_line_index]
 	
 	-- Get range in which other (normal) lines influence the current line
 	local beginning, ending = get_influence_range(main_line_index)
@@ -3964,8 +3979,8 @@ end
 
 -- Check if the parameters of the secondary line that are linked to main line are all finalized (second line doesn't need to be finalized)
 function is_linked_parameters_finalized(main_line_idx, second_line_idx)
-	local main_line_name = lines_data[main_line_idx].name
-	local second_line_name = lines_data[second_line_idx].name
+	local main_line_name = used_function_names[lines_info_filename][main_line_idx]
+	local second_line_name = used_function_names[lines_info_filename][second_line_idx]
 	
 	-- Iterate over parameters for the main line, check for links to the second line
 	for parameter, _ in pairs(lines_data[main_line_idx].parameters) do
@@ -4076,7 +4091,7 @@ function gather_lines_to_activate(main_line_index, main_window_lines, secondary_
 	for line_index, bool in secondary_window_lines do
 		
 		-- Iterate over parameters
-		local function_name = lines_data[line_index].name
+		local function_name = used_function_names[lines_info_filename][line_index]
 		
 		-- Iterate over parameters
 		for parameter, tbl in pairs(lines_data[line_index].parameters) do
@@ -4105,7 +4120,7 @@ function gather_lines_main(line_index)
 	-- Gather ordinary lines in main line influence range
 	local influenced_line_indices = get_lines_in_range(lines_info[lines_info_filename], main_line_position, ending) -- use only the current line and lines to the right because others are already fitted and locked
 	for line_idx, bool in pairs(influenced_line_indices) do
-		local function_name = lines_data[line_idx].name
+		local function_name = used_function_names[lines_info_filename][line_idx]
 		lines_params_table[function_name] = {}
 		
 		-- Get the parameter names of the function and add them to the table
@@ -4127,7 +4142,7 @@ function gather_linked_lines(line_index)
 	local lines_table = {}
 	
 	-- Gather linked lines
-	local original_function_name = lines_data[line_index].name
+	local original_function_name = used_function_names[lines_info_filename][line_index]
 	if linked_lines[original_function_name] then -- there are links
 		
 		-- Iterate over linked parameters of the main line
@@ -4170,7 +4185,7 @@ function gather_secondary_lines_iterate(linked_lines_list)
 			-- Iterate over the lines in the secondary window
 			for line_index, bool in pairs(influenced_line_indices) do
 				
-				local line_name = lines_data[line_index].name
+				local line_name = used_function_names[lines_info_filename][line_index]
 				lines_params_table[line_name] = lines_params_table[line_name] or {}
 				
 				-- Iterate over parameters for that line and save the line-parameter combo (convert format for line activation and locking)
@@ -4200,7 +4215,7 @@ function gather_secondary_lines(line_idx, beginning2, ending2)
 	-- Iterate over the lines in the secondary window
 	for line_index, bool in pairs(influenced_line_indices) do
 		
-		local line_name = lines_data[line_index].name
+		local line_name = used_function_names[lines_info_filename][line_index]
 		lines_params_table[line_name] = lines_params_table[line_name] or {}
 		
 		-- Iterate over parameters for that line and save the line-parameter combo (convert format for line activation and locking)
@@ -4215,7 +4230,7 @@ end
 -- Check if all parameters of a line have been fitted and therefore if the line is fitted
 function is_all_params_finalized(line_index)
 	local all_params_finalized = true
-	local line_name = lines_data[line_index].name
+	local line_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Iterate over parameters for that line and save the line-parameter combo
 	for parameter, tbl in pairs(lines_data[line_index].parameters) do
@@ -4227,7 +4242,7 @@ end
 
 -- return the index of a line with the given name
 function get_line_index_by_name(function_name)
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		local fn_name = used_function_names[lines_info_filename][line_index]
 		if fn_name == function_name then return line_index end
 	end
@@ -4420,7 +4435,7 @@ function check_all_root_vars_fitted(line_index, parameter_name)
 	end
 	
 	if all_vars_fitted then
-		local function_name = lines_data[line_index].name
+		local function_name = used_function_names[lines_info_filename][line_index]
 		finalized_lines_params[function_name] = finalized_lines_params[function_name] or {}
 		finalized_lines_params[function_name][parameter_name] = true
 	end
@@ -4581,20 +4596,26 @@ function nullify_lines(polyline_values)
 	db("nullify_lines", 2)
 	
 	-- Iterates over all spectral lines and nullifies them
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		nullify_line(line_index, polyline_values)
 	end
 end
 
 -- Turn weak line into dummy. This function is meant to be run after finishing with line fitting for the line in question
-function nullify_line(line_index, polyline_values)
+function nullify_line(original_line_index, polyline_values)
 	db("nullify_line", 3)
+	
+	-- Skip if it's not an important line
+	--if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 0 then return end
+	
+	-- Convert line index, considering that some lines are not output
+	local line_index = lines_data[original_line_index].output_idx
 	
 	-- Skip linked lines
 	if is_linked_line(line_index) then return end -- TODO: nullify if all linked lines should be nullified
 	
 	-- Get function height and area
-	local function_name = lines_data[line_index].name
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local fn = F:get_function(function_name) -- line function
 	local height, area = wrapSilent(function() return fn:get_param_value("height"), fn:get_param_value("Area") end)
 	
@@ -4602,8 +4623,14 @@ function nullify_line(line_index, polyline_values)
 	if (not height) or (not area) then return end
 	
 	-- Get the noise amplitude
-	local local_constant_height = polyline_values[line_index].height
-	local noise_height = math.max(local_constant_height, global_noise_height)
+	local noise_height
+	if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 0 then -- unimportant line, doesn't have polyline
+		noise_height = global_noise_height
+	else
+		local local_constant_height = polyline_values[line_index].height
+		noise_height = math.max(local_constant_height, global_noise_height)
+	end
+	
 	
 	-- Get the min FWHM bound for the wavelength
 	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
@@ -4660,7 +4687,7 @@ function unlock_parameter(line_index, parameter_name)
 	if lines_data[line_index].type == "dummy" then return end
 	
 	-- The parameter has already been fitted and finalized
-	local function_name = lines_data[line_index].name
+	local function_name = used_function_names[lines_info_filename][line_index]
 	if finalized_lines_params[function_name] and finalized_lines_params[function_name][parameter_name] then return end
 	
 	-- Get associated root parent variable names and types
@@ -4693,7 +4720,7 @@ end
 function turn_into_dummy(line_index)
 	db("turn_into_dummy",3)
 	
-	local function_name = lines_data[line_index].name
+	local function_name = used_function_names[lines_info_filename][line_index]
 	finalized_lines_params[function_name] = finalized_lines_params[function_name] or {}
 	
 	-- Register the line as dummy
@@ -4782,7 +4809,7 @@ function get_errors(data_filename, minimal_data_value, max_constant_value, max_h
 	end
 	
 	-- Iterates over all line indices
-	for line_index,_ in ipairs(lines_info[lines_info_filename]) do -- starts at 1. Constant has index 0
+	for line_index = 1, #(lines_info[lines_info_filename]) do -- starts at 1. Constant has index 0
 		errors = get_line_errors(line_index, errors, max_height_values, angle_errors)
 	end
 	
@@ -4796,7 +4823,10 @@ end
 function get_line_errors(line_index, errors, max_height_values, angle_errors)
 	db("get_line_errors", 2)
 	
-	local function_name = lines_data[line_index].name
+	-- Skip if it's not an important line
+	if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 0 then return errors end
+	
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local function_type = lines_data[line_index].type
 		
 	-- Skip constant
@@ -4855,7 +4885,7 @@ end
 function calculate_normal_error_derivative(line_index, parameter_name, max_height_values)
 	db("calculate_normal_error_derivative", 3)
 	
-	local function_name = lines_data[line_index].name
+	local function_name = used_function_names[lines_info_filename][line_index]
 	local function_type = lines_data[line_index].type
 	
 	local angle_variable_index = 1
@@ -5013,85 +5043,15 @@ function write_output(data_filename, spectrum_index, errors)
 	io.write(separator..errors.constant_error)
 	
 	
-	
 	F:execute("@+ <") -- Creates second dataset for FWHA calculations
 	local FWHA_spectrum_index = F:get_dataset_count() - 1
 	F:execute("use @"..tostring(FWHA_spectrum_index)) -- use new dataset
 	F:execute("%FWHA = Constant(a = 0)") -- Create a dummy function
 	F:execute("F += %FWHA") -- add the function to dataset functions
 	
-	-- Copies wavelengths into an array
-	local wavelength_array = {}
-	
-	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local function_name = lines_data[line_index].name
-		local fn = F:get_function(function_name)
-		table.insert(wavelength_array, fn:get_param_value("center"))
-	end	
-	
-	local maximum = 0 -- variable to check smallest wavelength index
-	
-	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local function_name = lines_data[line_index].name
-		local fn = F:get_function(function_name)
-		
-		-- Get variables
-		local height = fn:get_param_value("height")
-		local center = fn:get_param_value("center")
-		local area = fn:get_param_value("Area")
-		local fwhm = fn:get_param_value("FWHM")
-		
-		
-		-- Get variables according to the fitted line type
-		local hwhm,gwidth,shape,GFWHM,LFWHM
-		local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
-		if function_type == "Voigt" then -- Voigt
-			gwidth = math.abs(fn:get_param_value("gwidth"))
-			shape = math.abs(fn:get_param_value("shape"))
-			GFWHM = fn:get_param_value("GaussianFWHM")
-			LFWHM = fn:get_param_value("LorentzianFWHM")
-		elseif function_type == "VoigtFWHM" then -- VoigtFWHM
-			hwhm = math.abs(fn:get_param_value("fwhm")) / 2 -- saves space and user happiness (output format doesn't change)
-			shape = math.abs(fn:get_param_value("shape"))
-		elseif function_type == "VoigtApparatus" then -- VoigtApparatus
-			gwidth = math.abs(fn:get_param_value("gwidth"))
-			shape = math.abs(fn:get_param_value("shape"))
-		else -- Gaussian or Lorentzian
-			hwhm = math.abs(fn:get_param_value("hwhm"))
-		end
-		
-		local FWHA = get_FWHA(FWHA_spectrum_index, function_type, height, center, hwhm, gwidth, shape, fwhm) -- Full width at half area
-		
-		-- If there's no peak (peak height is 0) or width is 0 then all parameters are written ""
-		if (lines_data[line_index].type == "dummy") or (not height) or (height <= 0) then
-			io.write(string.rep(separator, 15)) -- 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones (+2 fields for local constant)
-		
-		else -- Else reads errors and writes peak info into output
-			-- values
-			io.write(separator..tostring(height or ""))
-			io.write(separator..tostring(center or ""))
-			io.write(separator..tostring(hwhm or ""))
-			io.write(separator..tostring(gwidth or ""))
-			io.write(separator..tostring(shape or ""))
-			io.write(separator..tostring(area or ""))
-			io.write(separator..tostring(fwhm or ""))
-			io.write(separator..tostring(FWHA or ""))
-			io.write(separator..tostring(GFWHM or ""))
-			io.write(separator..tostring(LFWHM or ""))
-			
-			-- standard errors
-			io.write(separator..tostring(errors.height[line_index] or ""))
-			io.write(separator..tostring(errors.center[line_index] or ""))
-			io.write(separator..tostring(errors.hwhm[line_index] or ""))
-			io.write(separator..tostring(errors.gwidth[line_index] or ""))
-			io.write(separator..tostring(errors.shape[line_index] or ""))
-		end
-		
-		-- Local constant, +2 fields
-		io.write(separator..tostring(errors.bg_local.value[line_index] or ""))
-		io.write(separator..tostring(errors.bg_local.error[line_index] or ""))
+	-- Iterates over all spectral lines and appends their data
+	for line_index = 1, #(lines_info[lines_info_filename]) do
+		output_line_info(line_index, FWHA_spectrum_index, errors)
 	end
 	
 	F:execute("use @0") -- reset active dataset to default
@@ -5099,6 +5059,72 @@ function write_output(data_filename, spectrum_index, errors)
 	
 	io.write("\n")
 	io.close(file)
+end
+
+-- Append data about the fitted line into the output file
+function output_line_info(line_index, FWHA_spectrum_index, errors)
+	
+	-- Skip if it's not an important line
+	if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 0 then return end
+	
+	local function_name = used_function_names[lines_info_filename][line_index]
+	local fn = F:get_function(function_name)
+	
+	-- Get variables
+	local height = fn:get_param_value("height")
+	local center = fn:get_param_value("center")
+	local area = fn:get_param_value("Area")
+	local fwhm = fn:get_param_value("FWHM")
+	
+	
+	-- Get variables according to the fitted line type
+	local hwhm,gwidth,shape,GFWHM,LFWHM
+	local function_type = lines_info[lines_info_filename][line_index]["Function to fit"]
+	if function_type == "Voigt" then -- Voigt
+		gwidth = math.abs(fn:get_param_value("gwidth"))
+		shape = math.abs(fn:get_param_value("shape"))
+		GFWHM = fn:get_param_value("GaussianFWHM")
+		LFWHM = fn:get_param_value("LorentzianFWHM")
+	elseif function_type == "VoigtFWHM" then -- VoigtFWHM
+		hwhm = math.abs(fn:get_param_value("fwhm")) / 2 -- saves space and user happiness (output format doesn't change)
+		shape = math.abs(fn:get_param_value("shape"))
+	elseif function_type == "VoigtApparatus" then -- VoigtApparatus
+		gwidth = math.abs(fn:get_param_value("gwidth"))
+		shape = math.abs(fn:get_param_value("shape"))
+	else -- Gaussian or Lorentzian
+		hwhm = math.abs(fn:get_param_value("hwhm"))
+	end
+	
+	local FWHA = get_FWHA(FWHA_spectrum_index, function_type, height, center, hwhm, gwidth, shape, fwhm) -- Full width at half area
+	
+	-- If there's no peak (peak height is 0) or width is 0 then all parameters are written ""
+	if (lines_data[line_index].type == "dummy") or (not height) or (height <= 0) then
+		io.write(string.rep(separator, 15)) -- 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones (+2 fields for local constant)
+	
+	else -- Else reads errors and writes peak info into output
+		-- values
+		io.write(separator..tostring(height or ""))
+		io.write(separator..tostring(center or ""))
+		io.write(separator..tostring(hwhm or ""))
+		io.write(separator..tostring(gwidth or ""))
+		io.write(separator..tostring(shape or ""))
+		io.write(separator..tostring(area or ""))
+		io.write(separator..tostring(fwhm or ""))
+		io.write(separator..tostring(FWHA or ""))
+		io.write(separator..tostring(GFWHM or ""))
+		io.write(separator..tostring(LFWHM or ""))
+		
+		-- standard errors
+		io.write(separator..tostring(errors.height[line_index] or ""))
+		io.write(separator..tostring(errors.center[line_index] or ""))
+		io.write(separator..tostring(errors.hwhm[line_index] or ""))
+		io.write(separator..tostring(errors.gwidth[line_index] or ""))
+		io.write(separator..tostring(errors.shape[line_index] or ""))
+	end
+	
+	-- Local constant, +2 fields
+	io.write(separator..tostring(errors.bg_local.value[line_index] or ""))
+	io.write(separator..tostring(errors.bg_local.error[line_index] or ""))
 end
 
 -- Checks if the output file exists and if it does increment its number, also create sessions folder
@@ -5145,11 +5171,15 @@ function init_output()
 	io.write(string.rep(separator.. "All lines", 6)) -- 6 values for general info
 	
 	-- Iterates over all spectral lines
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		local fn_type = lines_info[lines_info_filename][line_index]["Function to fit"] -- line type
-		local fn_name = lines_data[line_index].name -- line name
-		local output_str = separator..tostring(line_index).." "..fn_name.." "..fn_type
-		io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
+	for line_index = 1, #(lines_info[lines_info_filename]) do
+		
+		-- Write if line is to be output
+		if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 1 then 
+			local fn_type = lines_info[lines_info_filename][line_index]["Function to fit"] -- line type
+			local fn_name = used_function_names[lines_info_filename][line_index] -- line name
+			local output_str = separator..tostring(line_index).." "..fn_name.." "..fn_type
+			io.write(string.rep(output_str, 17)) -- 17 values for every line: 13 values for Voigt, Gaussian/Lorentzian have 9 values from which 7 overlap the previous ones, +2 for local constant
+		end
 	end
 	
 	io.write("\n")
@@ -5164,29 +5194,32 @@ function init_output()
 	io.write(separator .. "Global constant error")
 	
 	-- Iterates over all spectral lines and writes titles to the output
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+	for line_index = 1, #(lines_info[lines_info_filename]) do
 		
-		io.write(separator.. "height")
-		io.write(separator.. "center")
-		io.write(separator.. "hwhm")
-		io.write(separator.. "gwidth")
-		io.write(separator.. "shape")
-		io.write(separator.. "Area")
-		io.write(separator.. "FWHM")
-		io.write(separator.. "FWHA")
-		io.write(separator.. "GaussianFWHM")
-		io.write(separator.. "LorentzianFWHM")
-		
-		-- Standard errors
-		io.write(separator.. "height error")
-		io.write(separator.. "center error")
-		io.write(separator.. "hwhm error")
-		io.write(separator.. "gwidth error")
-		io.write(separator.. "shape error")
-		
-		-- Local constant
-		io.write(separator.. "local constant")
-		io.write(separator.. "local constant error")
+		-- Write if line is to be output
+		if lines_info[lines_info_filename][line_index]["To output (1/0)"] == 1 then 
+			io.write(separator.. "height")
+			io.write(separator.. "center")
+			io.write(separator.. "hwhm")
+			io.write(separator.. "gwidth")
+			io.write(separator.. "shape")
+			io.write(separator.. "Area")
+			io.write(separator.. "FWHM")
+			io.write(separator.. "FWHA")
+			io.write(separator.. "GaussianFWHM")
+			io.write(separator.. "LorentzianFWHM")
+			
+			-- Standard errors
+			io.write(separator.. "height error")
+			io.write(separator.. "center error")
+			io.write(separator.. "hwhm error")
+			io.write(separator.. "gwidth error")
+			io.write(separator.. "shape error")
+			
+			-- Local constant
+			io.write(separator.. "local constant")
+			io.write(separator.. "local constant error")
+		end
 	end
 	
 	io.write("\n")
