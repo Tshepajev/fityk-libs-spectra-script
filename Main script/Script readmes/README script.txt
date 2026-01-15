@@ -284,61 +284,75 @@ spectral lines or to initialize custom variable values. E.g. if two lines use th
 only one variable that's modified during fitting and both lines always have the same center value. The field is fed into Fityk command 
 line for parsing after separating the commands by my script. If it's an empty string (two commas in csv) then it just gets ignored.
 E.g. the field can contain "$center_variable = 400e-9; center = 4.57270e-007 + 3e-011 * sin($center_variable); height = abs($height_variable + 5)".
-The whitespace characters don't matter.
-The parameter (of a line) that uses user-defined "Linked variables" won't have it's error estimate because it would require heavy 
-string parsing and implementing derivative finding in LUA.
+The whitespace characters don't matter. The parameter (of a line) that uses user-defined "Linked variables" won't have it's error estimate 
+because it would require heavy string parsing and implementing derivative finding in LUA.
 
-The field is a string that is fed into Fityk to be parsed, so it's crucial that the format is correct. 
-The format can contain multiple expressions, separated by semicolons ;. My script only considers two instances of expressions: custom 
-variable value declaration (it is "$variable =..."), and everything else is appended to the function (assumed to be a parameter).
-The expressions between semicolons are fed into Fityk from left to right one by one, that's why variable declarations need to be first.
-It's recommended to use second version of referencing existing variables rather than creating new ones because I have tested that more 
-thoroughly.
+Here's a quick overview of how Fityk uses its variables and function parameters (also see Fityk manual) before continuing Linked variables 
+field explanation. A function (line) has multiple parameters. E.g. Gaussian function has parameters height, center and hwhm. Each of these 
+parameters has a variable assigned to it. There are 3 types of variables: simple variable (e.g. "~3.5" allows fitting to change the value), 
+locked variable a.k.a. constant (e.g. "3.5" doesn't change the value during fitting), and compound variable (e.g. "~3.5 + 2 * $_var" which 
+contains multiple variables and is updated if any of these change). If you declare a parameter like "%_function.parameter = ~3.5" then 
+Fityk first creates a new variable "$_15 = ~3.5" and then assigns the variable to the parameter "%_function.parameter = $_15". If you assing 
+one parameter to another (can be same or different function), then the referenced variable is used for both parameters (e.g. 
+"%_function2.parameter2 = %_function.parameter" means than now both parameters use $_15 variable).
 
-If you want to initialize a variable with a custom value then the first items between the semicolons need to be the variable (with $)
-declarations. These are fed directly to Fityk. Standard Fityk syntax applies, so if you write ~ in front of the number when initializing 
-a variable (simple variable) then the variable can change during fitting, otherwise it's locked (constant). You can link variables this 
-way too (compound variable), the script will initialize variables within an expression (between semicolons) after the equation sign 
-first. The variables always have to start with $ and the next symbol has to be an ordinary letter (Fityk can't use some special 
-characters and use caution when using _ because _1 format is already used by Fityk). Fityk doesn't want a number directly after the $.
-Do NOT use variables in "$_1" format (underscore and number after dollar sign)! These variables are created by Fityk and this might 
-cause conflicts and unexpected behavior. 
+The Linked variables field is a string that is fed into Fityk to be parsed, so it's crucial that the format is correct. 
+The format can contain multiple expressions, separated by semicolons ; and the whitespace characters don't matter. My script only considers 
+two instances of expressions: 
+1) custom variable value declaration (it is "$variable =..."), 
+2) everything else is concatenated to the function (assumed to be a function parameter and the result is concat("%_current_fn.", expression)).
+The variable declaration expressions (option 1) of all lines are fed into Fityk from left to right one by one. All variables of all lines 
+are declared before linking parameters (option 2). Only then are the parameters of all lines linked in such a way that dependencies are 
+linked first (topologically sorted). It's recommended to use of referencing existing functions and parameters (%_fn.param = 
+%_fn2.param + ~1) and therefore variables these depend on rather than creating new variables ("$new = ~1 ; %_fn.param = $new") because I have 
+tested that more thoroughly.
+
+If you want to initialize a variable with a custom value then the expression between the semicolons has to start with $ and the next symbol 
+has to be an ordinary letter (Fityk can't use some special characters and use caution when using _ because _1 format is already used by 
+Fityk). Fityk doesn't want a number directly after the $. Do NOT use variables in "$_1" format (underscore and number after dollar sign)! 
+These variables are created by Fityk and this might cause conflicts and unexpected behavior. You can write "~3.5" in a compound variable
+to automatically create the referenced new simple variable with the value of 3.5, but it will have a random name.
+
+The custom variable declarations fed directly to Fityk. Standard Fityk syntax applies, so if you write ~ in front of the number when 
+initializing a variable (simple variable) then the variable can change during fitting, otherwise it's locked (constant). You can link 
+variables this way too (compound variable), the script will initialize variables within an expression (between semicolons) after the 
+equation sign first, so that a variable can depend on another variable etc. Note that if a variable already exists then its value won't
+be overwritten and that expression instead gets ignored. So, if you want a compound variable with the referenced variable having a custom
+value (not the default "~1"), then you have to declare that one first. Note that if you don't intend to use a referenced variable in a 
+compound variable anywhere else then you can directly write "~3.5" to initialize it with the value 3.5. This way Fityk automatically creates 
+a new simple variable with value of 3.5, but you won't know the name of the variable. The line parameters are linked only after all variables 
+of all lines have been initialized. Because of that you mustn't reference line parameters in variable declaration expression (option 1) so 
+that the variable would depend on a line parameter (e.g. "$_abc = %H_line.height" wouldn't work because line isn't created yet, but 
+"height = $_abc" would for that function).
 
 In the example given in the first paragraph, if they don't already exist, the variables $center_variable and $height_variable are 
-created with the value of "~1" (default value, simple variable) by the script. Since "$center_variable = 400e-9" is before the 
-parameter linking, then the variable is created with the custom value, otherwise the variable would be created with default value 
-and the custom value wouldn't be written because the variable already exists. If the variable was created during the creation of 
-another spectral line then it won't be overwritten now, so make sure you linked everything correctly! Note that the lines are 
-sorted by ascending wavelength, not in the order in Lines_info*.csv. If you want to use two lines at the same wavelength then instead 
-add infinitesimal value (e.g. 1e-13 m) to the second one. Then everything still works as intended. In the script, since the function 
-name is in [Identificator]_000000 format (get_fn_name()) then the lines created later (larger wavelengths) will still have 6 
-significant digits for the wavelength, but it will be in [Identificator]_000000_0 format with the last value showing number of lines
-with the same name before the current one (_1 means there's 1 line with the same name on the left).
+created with the value of "~1" (default value, simple variable) by the script. "$center_variable = 400e-9" is done before the 
+parameter linking and the variable is created with the custom value. If the variable was created during the creation of some previous spectral 
+line then it won't be overwritten now, so make sure you linked everything correctly! Note that the lines are sorted by ascending wavelength, 
+not in the order in Lines_info*.csv. If you want to use two lines at the same wavelength then instead add infinitesimal value (e.g. 1e-13 m) 
+to the second one. Then everything still works as intended. In the script, since the function name is in [Identificator]_000000 format 
+(get_fn_name() rounds the input wavelength) then the lines created later (larger wavelengths) will still have 6 significant digits for 
+the wavelength, but it will be in [Identificator]_000000_0 format with the last value showing number of lines with the same name before 
+the current one (_1 means there's 1 line with the same name on the left).
 
 For parameter linking expressions, the whitespace right after semicolon is stripped and every string between semicolons (which isn't a 
-variable value declaration) is fed straight into Fityk, being preceeded by the function identifier and a dot. 
-In the example, Fityk gets "%Be1_457.center = 4.57270e-007 + 3e-011 * sin($center_variable)".
-If another row in Lines_info*.csv (another line) contains the same variable then the both lines/functions are linked by that variable.
-You can also use function.parameter syntax instead of the variable. E.g. "%H_656.center = %D_656.center + 0.18e-9". For script 
-v4.0, the function.parameter syntax needs the function to be created before (referenced line needs to have lower wavelength than 
-this one). This can be used to e.g. create H line and D line always 0.18 nm left of it, or the widths and shapes of the lines could 
-be made to use the same variable (same width and shape). Or e.g. W lines could all use theoretical amplitudes, being linked to each 
-other, acting as a group. This parameter linking is a very powerful tool for fitting the spectra. 
+variable value declaration) is fed straight into Fityk, being preceeded by the function identifier and a dot. In the example, Fityk gets 
+"%Be1_457.center = 4.57270e-007 + 3e-011 * sin($center_variable)". If another row in Lines_info*.csv (another line) contains the same 
+variable then the both lines/functions are linked by that variable. You can also use function.parameter syntax instead of the variable. 
+E.g. "%H_656.center = %D_656.center + 0.18e-9". The linking can be used to e.g. create H line and D line always 0.18 nm left of it, or 
+the widths and shapes of the lines could be made to use the same variable (same width and shape). Or e.g. W lines could all use 
+theoretical amplitudes, being linked to each other, acting as a group. This parameter linking is a very powerful tool for fitting the 
+spectra. For script v4.0, the function.parameter syntax needs the function to be created before (referenced line needs to have lower 
+wavelength than this one). In script v4.1+ the order of the linked parameters doesn't matter (references are topologically sorted). 
 
 If you want the linked parameters to follow the automatically defined bounds e.g. by "Max position shift (m)" and "Max line fwhm (m)" 
 then you have two options: either you reference another parameter through the function name (Identificator) like described in the H-D
 example previously, or you write the full equation that constricts the variable between bounds like described in the Be1_457 example
 previously. 
 
-The leftmost linked function is considered the original (e.g. all are fitted when moving window reaches the original and only the 
-original gets error/uncretainty assigned to the variable). It's best to make sure max_line_influence_diameter encompasses all of the
-linked lines. That way all relevant datapoints are active and all nearby lines are fitted simultaneously. If the diameter doesn't 
-contain farther away linked lines then those aren't fitted. If the linked variable has been fitted already then it's locked for 
-other linked lines. For example, if we have 4 W lines sparsely throughout the spectrum, so that they aren't within eachother's 
-influence diameter, and the height of all of these is directly linked (only one variable), then at the end all of the 4 lines would
-have the height of the first (leftmost) line. If the lines fall inside the diameter then fitting of the leftmost line considers the
-datapoints of other lines too. In the future I will probably code in the feature of multiple active windows simultaneously, then 
-this won't be an issue (but will be slower).
+Multiple windows are simultaneously active, so that all linked lines contribute to fitting the variable. The leftmost linked function 
+is considered the original (e.g. all are fitted when moving window reaches the original and only the original gets error/uncretainty 
+assigned to the variable). If the linked variable has been fitted already then it's locked for other linked lines. 
 
 
 
