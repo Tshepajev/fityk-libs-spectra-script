@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.3.2
+-- Script version: 4.4
 -- Author: Jasper Ristkok
 
 --[[
@@ -132,11 +132,12 @@ infinitesimal = 1e-18 -- a very small value but still in the ballpark of other F
 -- TODO: noise with input info
 -- TODO: integrate Fityk output organizer script
 -- TODO: Write readmes for filenames
--- TODO: Write readmes for linked variables
--- TODO: Update changelog
--- TODO: Create new examples
 -- TODO: use polyline directly instead of constants as local constant?
--- TODO: improve local constant algorithm when multiple active regions of linked lines are fitted
+-- TODO: add to_output column into Lines_info*.csv. If it's false then the line is considered as a secondary line during fitting but the main window won't stop for that line
+-- TODO: Fix single experiment mode outputting multiple files when all experiments of a single file are selected
+-- TODO: If Spectra_info*.asc contains filename with file extension then use it only as direct match, not first file of series (LIBS_001.asc and LIBS_002.asc not being same series)
+-- TODO: Reserve the output file in case multiple instances of Fityk are run simultaneously (otherwise all get the same output file name and overwrite each other)
+-- TODO: Don't fit new windows if current one stretches to the end of the data/last point
 
 -- Whether to wrap the code in debug hooks and count nr of calls and elapsed time for each function
 -- This is only for development. It enables counting amount of time taken for each function in the script.
@@ -171,6 +172,10 @@ lines_info_filename = nil
 
 -- List of all used function names as defined in the Lines_info*.csv
 used_function_names = {}
+
+-- List of all referenced function names as defined in the Lines_info*.csv in "Linked lines", 
+-- so these wouldn't be made into dummies during initialization
+referenced_lines = {}
 
 -- The format in which the filename is constructed
 filename_identifier_start = nil -- used when accessing Input_data files
@@ -464,6 +469,9 @@ function load_info()
 	
 	-- Save all function names that are used in used_function_names table
 	gather_function_names()
+	
+	-- Collect all referenced lines, so these wouldn't be made into dummies during initialization
+	get_all_referenced_lines()
 	
 	-- Iterate over files containing spectra info
 	for i,filename in ipairs(spectrum_files) do
@@ -964,6 +972,34 @@ function get_fn_name(filename, line_index)
 end
 
 
+-- Collect all referenced lines to prevent them being made dummies
+function get_all_referenced_lines()
+	db("create_line", 3)
+	
+	referenced_lines = {}
+	
+	-- Iterate over files
+	for filename, info in pairs(lines_info) do
+		referenced_lines[filename] = {}
+		
+		-- Iterate over the lines in Lines_info*.csv and save the referenced functions in "Linked variables"
+		for line_index = 1, #info do
+			
+			local linked_string = lines_info[filename][line_index]["Linked variables"]
+			if linked_string then
+			
+				--TODO: exclude function at the beginning of each expression (should be the same function of the file line)
+				-- Get a list of referenced functions and save the names of these
+				local functions_iterator = string.gmatch(linked_string, "%%([_%w]+)") -- %, [extracted] alphanumeric characters and _ (greedy 1 or more)
+				for fn_name in functions_iterator do
+					referenced_lines[filename][fn_name] = true
+				end
+			end
+		end
+	end
+end
+
+
 
 -- Read data from Spectra_info*.csv file into LUA spectra_info table
 -- Columns: Filename,Pixel correction filename,Lines filename,Background filename, Nr. of spectra accumulations,Camera pre amplification,Camera gain,Camera gate width (s),Series length,Additional multiplier,Additional additive
@@ -986,7 +1022,7 @@ function load_spectra_info(filename,pixel_files,lines_files)
 		else
 			local data_filename = values[1] -- get saved spectrum filename
 			if (not data_filename) or (data_filename == "") then -- no filename, skip loop iteration
-				printe("load_spectra_info() | No filename in the file row field. filename: "..tostring(filename))
+				printe("load_spectra_info() | No filename in the row field. filename: "..tostring(filename))
 				goto load_spectra_info_continue 
 			end
 			
@@ -2556,28 +2592,31 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 	-- root_variables[line_index] = {param_name_1 = {"name" = variable_name, "v_type" = variable_type}, param_name_2 = ...}
 	local root_variables = {}
 	
-	-- TODO: what if dummy is referenced by other lines? run save_linked_info() before create_line() and don't turn linked lines into dummies in the latter
+	-- Parse link definitions from Lines_info*.csv and save the expressions into variable_expressions and parameter_expressions
+	local variable_expressions, parameter_expressions = {}, {}
+	for line_index, info in ipairs(lines_info[lines_info_filename]) do
+		
+		-- Parse link definitions from Lines_info*.csv and save the expressions into variable_expressions and parameter_expressions
+		local var_expressions, par_expressions = parse_links_string(line_index)
+		variable_expressions = tableConcat(variable_expressions, var_expressions) -- concat adds elements
+		parameter_expressions = tableMerge(parameter_expressions, par_expressions) -- merge overwrites keys
+	end
+	
+	-- Apply variable definitions, so that creating dependency links works as intended
+	apply_variable_declarations(variable_expressions)
 	
 	-- Iterate over all the spectral lines and create them
 	for line_index, info in ipairs(lines_info[lines_info_filename]) do
 		create_line(line_index, minimal_data_value, root_variables, max_height_values)
 	end
 	
-	-- Create variables defined in the links
-	local parameter_expressions = {}
-	for line_index, info in ipairs(lines_info[lines_info_filename]) do
-		
-		-- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
-		-- Also save parameter link expressions
-		local line_expressions = apply_variable_declarations(line_index)
-		parameter_expressions = tableMerge(parameter_expressions, line_expressions)
-	end
+	-- TODO: consider situation when the same function parameter is declared multiple times
 	
 	-- Get the dependencies of lines to link (if left line references right one then right has to be linked first or the first link is broken)
 	local links_dependencies = {} -- Format: tbl[func_param] = {func_param_link1, func_param_link2, ...}
 	for line_name, expr_table in pairs(parameter_expressions) do
 		
-		-- Get dependencies. If there are no function dependencies then the expression is executed (parameter depends only on variables, not linked to other parameters)
+		-- Get dependencies. If there are no function dependencies then the expression is immediately executed (parameter depends only on variables, not linked to other parameters)
 		local line_dependencies = get_links_dependencies(line_name, expr_table, root_variables)
 		
 		-- Merge the new dependencies into links_dependencies
@@ -2597,7 +2636,7 @@ function initialize_all_lines(minimal_data_value, max_height_values)
 		local line_index = get_line_index_by_name(func_name)
 		
 		-- Apply links only for that function and parameter
-		apply_linked_parameter(line_index, root_variables, param_name) -- TODO: use it during line creation (guess constructor)?
+		apply_linked_parameter(line_index, root_variables, parameter_expressions, param_name) -- TODO: use it during line creation (guess constructor)?
 	end
 	
 	-- Delete the variables that aren't used anywhere after linking (just in case if it improves speed)
@@ -2648,7 +2687,9 @@ end
 function guess_parameter_constructor(line_index, minimal_data_value)
 	db("guess_parameter_constructor", 4)
 	
+	-- Line position and name
 	local line_position = lines_info[lines_info_filename][line_index]["Wavelength (m)"]
+	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- line is outside range and won't be fitted
 	if forbid_lines_outside_range and ((line_position < startpoint) or (line_position > endpoint)) then 
@@ -2660,8 +2701,6 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	local max_position_shift = lines_info[lines_info_filename][line_index]["Max position shift (m)"]
 	local max_FWHM = lines_info[lines_info_filename][line_index]["Max line fwhm (m)"]
 	
-	-- Get function name
-	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Only time when function name can be edited
 	local parameters = "guess %" .. function_name .. " = " .. function_type .. " ("
@@ -2721,8 +2760,7 @@ function guess_parameter_constructor(line_index, minimal_data_value)
 	
 	--if height <= noise then -- line doesn't exist 
 	local smaller_noise = 0.75 -- Low but wide line can still be distinguished from noise but I have to only use height here, so make the condition more relaxed.
-	if height <= (global_noise_height * detection_sn_ratio_height * smaller_noise) then -- line doesn't exist, might be wide, so lower than global_noise_height is ok
-		-- TODO: don't turn linked line into dummy here
+	if height <= (global_noise_height * detection_sn_ratio_height * smaller_noise) and (not referenced_lines[lines_info_filename][function_name]) then -- line doesn't exist, might be wide, so lower than global_noise_height is ok
 		return -- instead create a dummy function
 	end
 	
@@ -3098,67 +3136,134 @@ function parse_expression_for_dependencies(expression, function_name, root_varia
 	local declared_parameter_name = string.match(expression, "^([%w]+)%s-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any whitespace characters (lazy 0 or more), =
 	local func_param = function_name.."."..declared_parameter_name
 	
+	-- If expression references variables that don't exist yet, then create these with the default value ~1
+	create_referenced_variables(expression, declared_var_name)
+	
 	-- Get a list of referenced functions
 	local func_param_pattern = "%%([_%w]+%.[_%w]+)" -- %; [extracted] alphanumeric characters and _ (greedy 1 or more), ., alphanumeric characters and _ (greedy 1 or more)
 	local referenced_func_params = gather_matches(expression, func_param_pattern) 
 	
 	-- Todo: what if current parameter references a variable and that variable references another parameter?
+	-- TODO: prevent new parameter declaration if one already exists
 	
 	-- If there are no referenced functions then execute the expression immediately (variables are defined in apply_variable_declarations)
 	if tableLength(referenced_func_params) <= 0 then
 		expression = "%"..function_name.."."..expression
-		F:execute(expression)
 		
-		-- Modify root_variables to account for the new parameter variable(s)
-		local line_index = get_line_index_by_name(function_name)
-		local var_names, var_types = get_link_variable_types(line_index, declared_parameter_name)
-		root_variables[line_index][declared_parameter_name].names = var_names
-		root_variables[line_index][declared_parameter_name].v_types = var_types
+		-- Execute the parameter declaration expression and catch errors
+		local status, err = dbg_pcall(function()
+			F:execute(expression)
+			
+			-- Modify root_variables to account for the new parameter variable(s)
+			local line_index = get_line_index_by_name(function_name)
+			local var_names, var_types = get_link_variable_types(line_index, declared_parameter_name)
+			root_variables[line_index][declared_parameter_name].names = var_names
+			root_variables[line_index][declared_parameter_name].v_types = var_types
+		end)
+		
+		if not status then 
+			printe("parse_expression_for_dependencies() | Failed to execute parameter declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
+		end
 	end
 	
 	return func_param, referenced_func_params
 end
 
--- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
--- Create all defined and referenced variables
--- Save return parameter linking expressions
-function apply_variable_declarations(line_index)
-	db("apply_variable_declarations", 2)
+-- Parse the string of "Linked variables" and save expressions for variable declarations and parameter declarations
+function parse_links_string(line_index)
+	db("parse_links_string", 2)
 	
-	local expressions = {}
+	local variable_expressions = {}
+	local parameter_expressions = {}
 	local function_name = used_function_names[lines_info_filename][line_index]
 	
 	-- Get the string to parse
 	local linked_string = lines_info[lines_info_filename][line_index]["Linked variables"]
-	if not linked_string then return expressions end
+	if not linked_string then return variable_expressions, parameter_expressions end
 	
 	-- Get expressions to parse
 	local line_expressions = split_string(linked_string, ";")
 	
-	-- Iterate over the expressions, parse them and execute them
+	-- Iterate over the expressions, parse them and check type
 	for idx, expression in ipairs(line_expressions) do
-		parse_var_declaration_expression(expression, function_name, expressions)
+		
+		-- Check that it's a valid expression. 
+		-- It either declares a variable or declares a parameter and is for the same function.
+		local declared_var_name = string.match(expression, "^%s-%$([_%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+		local declared_func_name = string.match(expression, "^%s-%%([_%w]+)%.[%w]+%s-=") -- string start, whitespace characters (lazy 0 or more), %, [extracted] alphanumeric characters and _ (greedy 1 or more), ., alphanumeric characters (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+		local declared_param_name = string.match(expression, "^%s-([%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), [extracted] alphanumeric characters (greedy 1 or more), any whitespace characters (lazy 0 or more), =
+		
+		
+		-- Save a variable declaration expression
+		if declared_var_name then
+			table.insert(variable_expressions, expression)
+		
+		-- The declaration contains a function name, not only the parameter, the function name wasn't for the function on that file line
+		elseif declared_func_name and (declared_func_name ~= function_name) then
+			printe("parse_links_string() | Expression was for wrong function. Declared function: "..tostring(declared_func_name)..", linked variable command under function: "..function_name..", expression: "..expression)
+		
+		-- The declaration contains a function name, not only the parameter, strip the function name and save function parameter linking expression
+		elseif declared_func_name then
+			expression = strip_string(expression, "^%s-%%[_%w]+%.") -- string start, whitespace characters (lazy 0 or more), %, alphanumeric characters and _ (greedy 1 or more), .
+			
+			-- Save function parameter linking expression
+			parameter_expressions[function_name] = parameter_expressions[function_name] or {}
+			table.insert(parameter_expressions[function_name], expression)
+			
+		-- Parameter declaration without function name (ordinary), save function parameter linking expression
+		elseif declared_param_name then
+			parameter_expressions[function_name] = parameter_expressions[function_name] or {}
+			table.insert(parameter_expressions[function_name], expression)
+		
+		-- Weird string
+		else
+			printe("parse_links_string() | Invalid expression. Linked variable command under function: "..function_name..", expression: "..expression)
+		end
 	end
 	
-	return expressions
+	return variable_expressions, parameter_expressions
+end
+
+-- Apply variable definitions from Lines_info*.csv, so that creating dependency links works as intended
+-- Create all defined and referenced variables
+function apply_variable_declarations(variable_expressions)
+	db("apply_variable_declarations", 2)
+	
+	-- Iterate over the expressions, parse them and execute them
+	for idx, expression in ipairs(variable_expressions) do
+		execute_var_declaration_expression(expression)
+	end
 end
 
 -- Create all defined and referenced variables in the expression
--- Save parameter linking expressions into expressions table inline
-function parse_var_declaration_expression(expression, function_name, expressions)
-	db("parse_var_declaration_expression", 3)
+function execute_var_declaration_expression(expression)
+	db("execute_var_declaration_expression", 3)
 	
-	-- Check if it's a variable declaration expression
+	-- Get variable name
 	local declared_var_name = string.match(expression, "^%s-%$([_%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
 	
 	-- Check if variable is already created, return if yes
-	if declared_var_name then
-		local var = wrapSilent(function() return F:get_variable(declared_var_name) end) -- variable object
-		if var then
-			printe("parse_var_declaration_expression() | Variable declaration but variable already exists. Linked variable command under function: "..function_name..", expression: "..expression)
-			return
-		end
+	local var = wrapSilent(function() return F:get_variable(declared_var_name) end) -- variable object
+	if var then
+		printe("execute_var_declaration_expression() | Variable declaration but variable already exists. Linked variable expression: "..expression)
+		return
 	end
+	
+	-- If expression references variables that don't exist yet, then create these with the default value ~1
+	create_referenced_variables(expression, declared_var_name)
+	
+	-- Execute the variable declaration expression and catch errors
+	local status, err = dbg_pcall(function()
+		F:execute(expression)
+	end)
+	if not status then 
+		printe("execute_var_declaration_expression() | Failed to execute variable declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
+	end
+end
+
+-- If expression references variables that don't exist yet, then create these with the default value ~1
+function create_referenced_variables(expression, declared_var_name)
+	db("create_referenced_variables", 3)
 	
 	-- Get a list of referenced variables
 	local variable_names_table = get_variables_from_expression(expression)
@@ -3174,45 +3279,21 @@ function parse_var_declaration_expression(expression, function_name, expressions
 			end
 		end
 	end
-	
-	-- Execute the variable declaration or save the parameter declaration
-	if declared_var_name then -- is variable declaration
-		
-		-- Execute the expression and catch errors
-		local status, err = dbg_pcall(function()
-			F:execute(expression)
-		end)
-		
-		if not status then 
-			printe("parse_var_declaration_expression() | Failed to execute variable declaration. Expression: "..tostring(expression)..", for line: "..tostring(function_name))
-		end
-	
-	-- Save other expressions which are function parameter linking for later use
-	else
-		expressions[function_name] = expressions[function_name] or {}
-		table.insert(expressions[function_name], expression)
-		return
-	end
 end
 
 -- Use Linked variables equations defined in Lines_info*.csv
-function apply_linked_parameter(line_index, root_variables, check_param_name)
+function apply_linked_parameter(line_index, root_variables, parameter_expressions, check_param_name)
 	db("apply_linked_parameter", 2)
 	
 	if not root_variables[line_index] then return end -- line is dummy -- TODO: revive dummy?
 	
 	local function_name = used_function_names[lines_info_filename][line_index]
 	
-	-- Get the string to parse
-	local linked_string = lines_info[lines_info_filename][line_index]["Linked variables"]
-	if not linked_string then return end
-	
-	-- Get expressions to parse
-	local expressions = split_string(linked_string, ";")
-	
-	-- Iterate over the expressions, parse them and execute them
-	for idx, expression in ipairs(expressions) do
-		parse_and_execute_parameter_expression(expression, line_index, function_name, root_variables, check_param_name)
+	-- Iterate over linked parameter expressions for that line
+	if parameter_expressions[function_name] then
+		for idx, expression in ipairs(parameter_expressions[function_name]) do 
+			parse_and_execute_parameter_expression(expression, line_index, function_name, root_variables, check_param_name)
+		end
 	end
 end
 
@@ -3221,10 +3302,6 @@ end
 -- All referenced and defined variables are already created in apply_variable_declarations()
 function parse_and_execute_parameter_expression(expression, line_index, function_name, root_variables, check_param_name)
 	db("parse_and_execute_parameter_expression", 3)
-	
-	-- Check if it's a variable declaration expression
-	local declared_var_name = string.match(expression, "^%s-%$([_%w]+)%s-=") -- string start, whitespace characters (lazy 0 or more), $, [extracted] alphanumeric characters and _ (greedy 1 or more), any whitespace characters (lazy 0 or more), =
-	if declared_var_name then return end
 	
 	-- Get the declared parameter
 	local declared_parameter_name = string.match(expression, "^([%w]+).-=") -- string start, [extracted] alphanumeric characters (greedy 1 or more), any characters (lazy 0 or more), =
@@ -3238,11 +3315,11 @@ function parse_and_execute_parameter_expression(expression, line_index, function
 		-- Check if line is already created
 		local fn = F:get_function(fn_name) -- line function
 		if not fn then
-			printe("parse_and_execute_parameter_expression() | Function referenced but not yet created. Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
+			printe("parse_and_execute_parameter_expression() | Function referenced but not yet created. Wrong referenced function name in Lines_info*.csv? Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
 			return
 		end
 		
-		-- Check if the referenced function is a dummy, return if yes -- TODO: revive dummy or prevent this situation in create_line()
+		-- Check if the referenced function is a dummy, return if yes
 		local line_index = get_line_index_by_name(fn_name)
 		if not root_variables[line_index] then
 			printe("parse_and_execute_parameter_expression() | Function referenced a dummy. Skipping the declaration and it might break other links. Linked variable command under function: "..function_name..", referenced function name: "..fn_name..", expression: "..expression)
