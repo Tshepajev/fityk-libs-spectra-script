@@ -1,5 +1,5 @@
 -- Lua script for Fityk GUI version.
--- Script version: 4.5
+-- Script version: 4.5.1
 -- Author: Jasper Ristkok
 
 --[[
@@ -169,6 +169,9 @@ spectra_info, pixel_info, lines_info = {},{},{}
 
 -- The filename for the Lines_info*.csv to use with the currently processed spectra series
 lines_info_filename = nil
+
+-- Map of output line indices and their corresponding line indices of the lines_info table
+output_line_index_map = {}
 
 -- List of all used function names as defined in the Lines_info*.csv
 used_function_names = {}
@@ -472,6 +475,9 @@ function load_info()
 	
 	-- Collect all referenced lines, so these wouldn't be made into dummies during initialization
 	get_all_referenced_lines()
+	
+	-- Save the line indices which are to be output
+	map_output_line_indices()
 	
 	-- Iterate over files containing spectra info
 	for i,filename in ipairs(spectrum_files) do
@@ -970,7 +976,7 @@ end
 
 -- Collect all referenced lines to prevent them being made dummies
 function get_all_referenced_lines()
-	db("create_line", 3)
+	db("get_all_referenced_lines", 3)
 	
 	referenced_lines = {}
 	
@@ -983,8 +989,7 @@ function get_all_referenced_lines()
 			
 			local linked_string = lines_info[filename][line_index]["Linked variables"]
 			if linked_string then
-			
-				--TODO: exclude function at the beginning of each expression (should be the same function of the file line)
+				
 				-- Get a list of referenced functions and save the names of these
 				local functions_iterator = string.gmatch(linked_string, "%%([_%w]+)") -- %, [extracted] alphanumeric characters and _ (greedy 1 or more)
 				for fn_name in functions_iterator do
@@ -995,6 +1000,24 @@ function get_all_referenced_lines()
 	end
 end
 
+-- Save the line indices which are to be output and map the line index from Lines_info*.csv files
+function map_output_line_indices()
+	db("map_output_line_indices", 3)
+	
+	output_line_index_map = {}
+	
+	-- Iterate over files
+	for filename, info in pairs(lines_info) do
+		output_line_index_map[filename] = {}
+		
+		-- Iterate over the lines in Lines_info*.csv and save the lines which are to be output
+		for line_index = 1, #info do
+			if lines_info[filename][line_index]["To output (1/0)"] ~= 0 then
+				table.insert(output_line_index_map[filename], line_index)
+			end
+		end
+	end
+end
 
 
 -- Read data from Spectra_info*.csv file into LUA spectra_info table
@@ -1464,6 +1487,7 @@ function process_data_series(data_filename, experiment_check)
 	--check_output_paths() -- avoid overwriting previous output, create one output for every series
 	
 	-- Get the lines_info_filename and write it into the global variable
+	-- This isn't done before looping over series because there might be Lines_info*.csv files with same lines but different variable values
 	get_lines_info_filename(data_filename)
 	
 	-- Iterate over spectra in series and process them one by one
@@ -5384,22 +5408,37 @@ function create_polyline_local_constant(polyline_values)
 	-- Construct polyline string
 	for idx, value_tbl in ipairs(polyline_values) do
 		
+		-- Get the line indices, considering that polyline_values doesn't have lines which won't be output
+		local curr_line_index = output_line_index_map[lines_info_filename][idx]
+		local prev_line_index = output_line_index_map[lines_info_filename][idx - 1]
+		local next_line_index = output_line_index_map[lines_info_filename][idx + 1]
+		
 		-- Get boundaries of current window
 		local current_start = value_tbl.start
 		local current_end = value_tbl.ending
-		local current_center = (current_start + current_end) / 2
 		
-		-- Get the bondaries of previous and next windows
+		
+		-- Get the bondaries of current, previous and next windows
 		local end_prev = polyline_values[idx - 1] and polyline_values[idx - 1].ending or -infinity
-		local center_prev = polyline_values[idx - 1] and (end_prev + polyline_values[idx - 1].start) / 2 or -infinity
 		local start_next = polyline_values[idx + 1] and polyline_values[idx + 1].start or infinity
-		local center_next = polyline_values[idx + 1] and (start_next + polyline_values[idx + 1].ending) / 2 or infinity
+		
+		-- Get centers for current, previous and next windows
+		--local center_current = (current_start + current_end) / 2 -- this doesn't work because influence range can be different on either side
+		--local center_current = lines_info[lines_info_filename][curr_line_index]["Wavelength (m)"] -- is ugly when line has shifted so close to another line that the line isn't on its segment
+		--local center_prev = prev_line_index and lines_info[lines_info_filename][prev_line_index]["Wavelength (m)"] or -infinity -- is ugly when line has shifted so close to another line that the line isn't on its segment
+		--local center_next = next_line_index and lines_info[lines_info_filename][next_line_index]["Wavelength (m)"] or infinity
+		local current_fn = curr_line_index and F:get_function(used_function_names[lines_info_filename][curr_line_index])
+		local prev_fn = prev_line_index and F:get_function(used_function_names[lines_info_filename][prev_line_index])
+		local next_fn = next_line_index and F:get_function(used_function_names[lines_info_filename][next_line_index])
+		local center_current = current_fn and current_fn:get_param_value("center") or lines_info[lines_info_filename][curr_line_index]["Wavelength (m)"]
+		local center_prev = prev_fn and prev_fn:get_param_value("center") or -infinity
+		local center_next = next_fn and next_fn:get_param_value("center") or infinity
 		
 		-- if two windows overlap then take the center of the centers of these as boundary (the windows might be different width)
 		local use_start = current_start
 		local use_end = current_end
-		if current_start < end_prev then use_start = (current_center + center_prev) / 2 end
-		if current_end > start_next then use_end = (current_center + center_next) / 2 end
+		if current_start < end_prev then use_start = (center_current + center_prev) / 2 end
+		if current_end > start_next then use_end = (center_current + center_next) / 2 end
 		
 		-- Initialize before first window
 		if idx == 1 then polyline_str = polyline_str .. "," .. tostring(use_start) .. ",0" end -- 0 height from -infinity to here
